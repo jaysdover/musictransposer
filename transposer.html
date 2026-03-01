@@ -1,0 +1,1950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Treble to Cello Transposer</title>
+<script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.5/build/cjs/vexflow.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@14/build/Tone.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #f5f5f0; color: #333; }
+
+.header { background: #2c3e50; color: white; padding: 20px 30px; }
+.header h1 { font-size: 24px; font-weight: 600; }
+.header p { font-size: 14px; opacity: 0.8; margin-top: 4px; }
+
+.container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+
+/* Tabs */
+.tabs { display: flex; gap: 0; margin-bottom: 0; }
+.tab-btn {
+    padding: 12px 24px; border: 1px solid #ccc; border-bottom: none;
+    background: #e8e8e3; cursor: pointer; font-size: 14px; font-weight: 500;
+    border-radius: 8px 8px 0 0; transition: background 0.2s;
+    touch-action: manipulation;
+}
+.tab-btn.active { background: white; border-bottom: 1px solid white; margin-bottom: -1px; z-index: 1; }
+.tab-btn:hover:not(.active) { background: #ddd; }
+
+.tab-content { display: none; background: white; border: 1px solid #ccc; border-radius: 0 8px 8px 8px; padding: 20px; }
+.tab-content.active { display: block; }
+
+/* Drop Zone */
+.drop-zone {
+    border: 2px dashed #aaa; border-radius: 12px; padding: 50px 20px;
+    text-align: center; cursor: pointer; transition: all 0.3s;
+    background: #fafaf7;
+}
+.drop-zone:hover, .drop-zone.drag-over { border-color: #3498db; background: #ebf5fb; }
+.drop-zone p { font-size: 16px; color: #666; }
+.drop-zone .icon { font-size: 40px; margin-bottom: 10px; }
+.drop-zone input { display: none; }
+.drop-zone .hint { font-size: 12px; color: #999; margin-top: 8px; }
+
+.btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.btn {
+    padding: 8px 16px; border: 1px solid #ccc; border-radius: 6px;
+    background: white; cursor: pointer; font-size: 13px; transition: all 0.2s;
+    touch-action: manipulation; /* eliminates 300ms iOS tap delay */
+}
+.btn:hover { background: #f0f0f0; }
+.btn.active { background: #3498db; color: white; border-color: #3498db; }
+.btn.primary { background: #27ae60; color: white; border-color: #27ae60; }
+.btn.primary:hover { background: #219a52; }
+.btn.secondary { background: #3498db; color: white; border-color: #3498db; }
+.btn.secondary:hover { background: #2980b9; }
+
+/* Editor */
+.editor-toolbar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
+.toolbar-group { display: flex; gap: 4px; align-items: center; }
+.toolbar-group label { font-size: 12px; color: #888; margin-right: 4px; font-weight: 600; text-transform: uppercase; }
+.dur-btn { display: flex; flex-direction: column; align-items: center; padding: 6px 10px; min-width: 60px; }
+.dur-symbol { font-size: 18px; line-height: 1.2; }
+.dur-label { font-size: 10px; color: #666; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.03em; }
+.dur-btn.active .dur-label { color: rgba(255,255,255,0.85); }
+
+.editor-staff-container {
+    position: relative; border: 1px solid #ddd; border-radius: 8px;
+    background: white; overflow: hidden; cursor: crosshair; min-height: 180px;
+    touch-action: none;  /* let Pointer Events handle all touch input */
+}
+#ghost-note {
+    position: absolute; width: 14px; height: 10px; background: rgba(41, 128, 185, 0.5);
+    border-radius: 50%; pointer-events: none; display: none; transform: translate(-50%, -50%);
+    border: 1px solid rgba(41, 128, 185, 0.8);
+}
+
+/* Settings */
+.settings-row { display: flex; gap: 16px; align-items: center; margin: 16px 0; flex-wrap: wrap; }
+.settings-row label { font-size: 13px; font-weight: 500; }
+.settings-row select, .settings-row input {
+    padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;
+}
+
+/* Output */
+.output-section { margin-top: 24px; background: white; border: 1px solid #ccc; border-radius: 8px; padding: 20px; }
+.output-section h2 { font-size: 18px; margin-bottom: 4px; }
+.output-section .subtitle { font-size: 13px; color: #888; margin-bottom: 16px; }
+#bass-output-container, #tenor-output-container, #treble-output-container { min-height: 150px; overflow-x: auto; }
+.export-row { display: flex; gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #eee; }
+
+.status { padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-top: 12px; }
+.status.info { background: #ebf5fb; color: #2980b9; }
+.status.success { background: #eafaf1; color: #27ae60; }
+.status.error { background: #fdedec; color: #e74c3c; }
+
+.empty-state { text-align: center; padding: 40px; color: #aaa; }
+.empty-state p { font-size: 14px; }
+
+/* Playback */
+.playback-section {
+    background: white; border: 1px solid #ccc; border-radius: 8px;
+    padding: 14px 20px; margin-top: 20px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.playback-section h3 { font-size: 14px; font-weight: 600; color: #555; margin: 0 6px 0 0; }
+.playback-divider { width: 1px; height: 24px; background: #ddd; margin: 0 4px; }
+#playback-bpm { width: 110px; accent-color: #3498db; cursor: pointer; }
+.bpm-display { font-size: 13px; font-weight: 600; min-width: 30px; color: #333; }
+#playback-status { font-size: 12px; color: #888; margin-left: 4px; }
+
+/* Note playback highlighting — targets any SVG group tagged with .playing */
+g.playing path { fill: #e67e22 !important; stroke: #e67e22 !important; }
+
+/* Clip output SVGs so they can't overflow their containers and intercept touches */
+#bass-output-container,
+#tenor-output-container,
+#treble-output-container { overflow: hidden; }
+/* Constrain SVG width within scrollable containers; do NOT set height:auto as it
+   can collapse VexFlow SVGs on iOS Safari which ignores explicit height attributes */
+#bass-output-container svg,
+#tenor-output-container svg,
+#treble-output-container svg,
+#editor-staff svg { max-width: 100%; }
+
+/* ---- Page layout: main content + saved panel side-by-side ---- */
+.container { display: flex; gap: 24px; align-items: flex-start; max-width: 1400px; }
+.main-col  { flex: 1; min-width: 0; }
+
+/* ---- Saved Transpositions Panel ---- */
+.saved-panel {
+    width: 270px; flex-shrink: 0;
+    background: white; border: 1px solid #ccc; border-radius: 8px;
+    position: sticky; top: 16px; overflow: hidden;
+}
+.saved-panel-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 13px 16px; background: #f5f5f0; border-bottom: 1px solid #e0e0e0;
+    cursor: pointer; user-select: none;
+    font-size: 13px; font-weight: 600; color: #2c3e50;
+}
+.saved-panel-header:hover { background: #eceae6; }
+.panel-chevron { transition: transform 0.2s; font-size: 14px; color: #999; }
+.panel-chevron.open { transform: rotate(180deg); }
+.saved-panel-body { max-height: 72vh; overflow-y: auto; }
+.saved-empty {
+    padding: 24px 16px; font-size: 12px; color: #bbb;
+    text-align: center; line-height: 1.6;
+}
+.saved-panel-save {
+    padding: 10px 14px; border-bottom: 1px solid #f0f0f0; background: #fafaf7;
+}
+.saved-panel-save .btn { width: 100%; justify-content: center; font-size: 12px; }
+
+/* ---- Saved list items ---- */
+.saved-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px; border-bottom: 1px solid #f0f0f0;
+    cursor: pointer; transition: background 0.15s;
+}
+.saved-item:last-child { border-bottom: none; }
+.saved-item:hover { background: #f9f9f6; }
+.saved-item-info { flex: 1; min-width: 0; }
+.saved-item-title {
+    font-size: 13px; font-weight: 600; color: #2c3e50;
+    display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.saved-item-meta  { font-size: 11px; color: #aaa; margin-top: 3px; display: block; }
+.saved-item-badge {
+    display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 8px;
+    margin-right: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    vertical-align: middle;
+}
+.badge-export { background: #eaf4ff; color: #2980b9; }
+.badge-print  { background: #eafaf1; color: #27ae60; }
+.badge-manual { background: #fef9e7; color: #d4ac0d; }
+.saved-item-delete {
+    background: none; border: none; cursor: pointer; color: #ddd;
+    font-size: 14px; padding: 4px; border-radius: 4px;
+    transition: color 0.15s; flex-shrink: 0; line-height: 1;
+}
+.saved-item-delete:hover { color: #e74c3c; }
+
+/* ---- Confirm / alert modal ---- */
+.modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    display: flex; align-items: center; justify-content: center; z-index: 9998;
+}
+.modal-box {
+    background: white; border-radius: 10px; padding: 28px 32px;
+    max-width: 340px; width: 90%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18); text-align: center;
+}
+.modal-box p { font-size: 15px; color: #333; margin-bottom: 22px; line-height: 1.5; }
+.modal-buttons { display: flex; gap: 10px; justify-content: center; }
+.modal-buttons .btn { min-width: 90px; }
+.btn.danger { background: #e74c3c; color: white; border-color: #e74c3c; }
+.btn.danger:hover { background: #c0392b; }
+
+/* ---- Title required warning ---- */
+.title-warning { font-size: 11px; color: #e74c3c; margin-left: 6px; display: none; }
+.title-warning.visible { display: inline; }
+
+/* ---- Mobile: panel stacks below main content, becomes collapsible ---- */
+@media (max-width: 768px) {
+    .container { flex-direction: column; }
+    .saved-panel { width: 100%; position: static; }
+    .saved-panel-body { max-height: none; }
+    .saved-panel-body.collapsed { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- JS status banner: stays orange if JavaScript is not running (e.g. iOS QuickLook).
+     Turns green briefly when JS loads, then disappears. Turns red on any JS error. -->
+<div id="_js-banner" style="background:#e67e22;color:white;padding:8px 20px;font-size:12px;text-align:center;letter-spacing:0.01em;">
+    ⚠ JavaScript not active — open this file in Safari for full functionality
+</div>
+
+<div class="header">
+    <h1>Treble to Cello Transposer</h1>
+    <p>Convert treble clef sheet music to bass and tenor for cello</p>
+</div>
+
+<div class="container">
+<div class="main-col">
+    <!-- Input Tabs -->
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('import')">Import MusicXML</button>
+        <button class="tab-btn" onclick="switchTab('editor')">Interactive Editor</button>
+    </div>
+
+    <!-- Import Tab -->
+    <div id="tab-import" class="tab-content active">
+        <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+            <div class="icon">&#119070;</div>
+            <p>Drag & drop a MusicXML file here, or click to browse</p>
+            <p class="hint">Accepts .musicxml, .xml, and .mxl files</p>
+            <input type="file" id="file-input" accept=".musicxml,.xml,.mxl">
+        </div>
+        <div class="btn-row">
+            <button class="btn secondary" onclick="loadExample()">Load Example (C Major Scale)</button>
+        </div>
+        <div id="import-status"></div>
+    </div>
+
+    <!-- Editor Tab -->
+    <div id="tab-editor" class="tab-content">
+        <div class="editor-toolbar">
+            <div class="toolbar-group">
+                <label>Duration:</label>
+                <button class="btn dur-btn" data-dur="w" onclick="setDuration('w',this)"><span class="dur-symbol">&#119133;</span><span class="dur-label">Whole</span></button>
+                <button class="btn dur-btn" data-dur="h" onclick="setDuration('h',this)"><span class="dur-symbol">&#119134;</span><span class="dur-label">Half</span></button>
+                <button class="btn dur-btn active" data-dur="q" onclick="setDuration('q',this)"><span class="dur-symbol">&#119135;</span><span class="dur-label">Quarter</span></button>
+                <button class="btn dur-btn" data-dur="8" onclick="setDuration('8',this)"><span class="dur-symbol">&#119136;</span><span class="dur-label">Eighth</span></button>
+                <button class="btn dur-btn" data-dur="16" onclick="setDuration('16',this)"><span class="dur-symbol">&#119137;</span><span class="dur-label">Sixteenth</span></button>
+            </div>
+            <div class="toolbar-group">
+                <label>Modify:</label>
+                <button class="btn" id="btn-sharp" onclick="toggleAccidental('#')">&#9839;</button>
+                <button class="btn" id="btn-flat" onclick="toggleAccidental('b')">&#9837;</button>
+                <button class="btn" id="btn-dot" onclick="toggleDot()">Dot</button>
+                <button class="btn" id="btn-tie" onclick="toggleTie()" title="Next note placed will be tied from the previous note">Tie ~</button>
+                <button class="btn" id="btn-rest" onclick="addRest()">Rest</button>
+            </div>
+            <div class="toolbar-group">
+                <label>Edit:</label>
+                <button class="btn" onclick="undoLastNote()">Undo</button>
+                <button class="btn" onclick="clearEditor()">Clear</button>
+            </div>
+        </div>
+
+        <div class="settings-row">
+            <label>Time Sig:</label>
+            <select id="time-sig" onchange="updateSettings()">
+                <option value="4/4">4/4</option>
+                <option value="3/4">3/4</option>
+                <option value="2/4">2/4</option>
+                <option value="6/8">6/8</option>
+                <option value="2/2">2/2</option>
+            </select>
+            <label>Key:</label>
+            <select id="key-sig" onchange="updateSettings()">
+                <option value="C">C Major</option>
+                <option value="G">G Major</option>
+                <option value="D">D Major</option>
+                <option value="A">A Major</option>
+                <option value="E">E Major</option>
+                <option value="B">B Major</option>
+                <option value="F#">F# Major</option>
+                <option value="F">F Major</option>
+                <option value="Bb">Bb Major</option>
+                <option value="Eb">Eb Major</option>
+                <option value="Ab">Ab Major</option>
+                <option value="Db">Db Major</option>
+            </select>
+            <label>Title:</label>
+            <input type="text" id="piece-title" placeholder="Untitled" style="width:160px;"
+                   oninput="document.getElementById('title-warning').classList.remove('visible')">
+            <span class="title-warning" id="title-warning">⚠ Title required to save</span>
+        </div>
+
+        <p style="font-size:12px; color:#888; margin-bottom:8px;">Click on the staff below to place notes. Notes appear in treble clef — bass clef output updates automatically.</p>
+        <div class="editor-staff-container" id="editor-staff-container">
+            <div id="editor-staff"></div>
+            <div id="ghost-note"></div>
+        </div>
+    </div>
+
+    <!-- Playback Controls -->
+    <div class="playback-section">
+        <h3>Playback</h3>
+        <button class="btn primary" id="btn-play" onclick="playMusic()">&#9654;&nbsp;Play</button>
+        <button class="btn" id="btn-stop" onclick="stopMusic()" disabled>&#9632;&nbsp;Stop</button>
+        <div class="playback-divider"></div>
+        <label style="font-size:13px; font-weight:500;">Tempo:</label>
+        <input type="range" id="playback-bpm" min="40" max="240" value="100"
+               oninput="document.getElementById('bpm-display').textContent = this.value">
+        <span class="bpm-display" id="bpm-display">100</span>
+        <span style="font-size:12px; color:#888;">BPM</span>
+        <span id="playback-status"></span>
+    </div>
+
+    <!-- Bass Clef Output Section -->
+    <div class="output-section">
+        <h2>Bass Clef Output</h2>
+        <p class="subtitle">Standard cello bass clef notation</p>
+        <div id="bass-output-container">
+            <div class="empty-state"><p>Import a MusicXML file or use the interactive editor to get started</p></div>
+        </div>
+        <div class="export-row">
+            <button class="btn primary" onclick="exportPDF('bass')">Export PDF</button>
+            <button class="btn" onclick="printAndSave()">Print</button>
+        </div>
+    </div>
+
+    <!-- Tenor Clef Output Section -->
+    <div class="output-section" style="margin-top: 20px;">
+        <h2>Tenor Clef Output</h2>
+        <p class="subtitle">Cello tenor clef notation</p>
+        <div id="tenor-output-container">
+            <div class="empty-state"><p>Import a MusicXML file or use the interactive editor to get started</p></div>
+        </div>
+        <div class="export-row">
+            <button class="btn primary" onclick="exportPDF('tenor')">Export PDF</button>
+            <button class="btn" onclick="printAndSave()">Print</button>
+        </div>
+    </div>
+
+    <!-- Treble G Clef Output Section -->
+    <div class="output-section" style="margin-top: 20px;">
+        <h2>Treble G Clef Output</h2>
+        <p class="subtitle">Original treble G clef notation</p>
+        <div id="treble-output-container">
+            <div class="empty-state"><p>Import a MusicXML file or use the interactive editor to get started</p></div>
+        </div>
+        <div class="export-row">
+            <button class="btn primary" onclick="exportPDF('treble')">Export PDF</button>
+            <button class="btn" onclick="printAndSave()">Print</button>
+        </div>
+    </div>
+</div><!-- end .main-col -->
+
+<!-- Saved Transpositions Panel -->
+<div class="saved-panel" id="saved-panel">
+    <div class="saved-panel-header" id="saved-panel-header" onclick="toggleSavedPanel()">
+        <span>📋 Saved Transpositions</span>
+        <span class="panel-chevron" id="panel-chevron">▾</span>
+    </div>
+    <div class="saved-panel-body" id="saved-panel-body">
+        <div class="saved-panel-save">
+            <button class="btn secondary" id="btn-save" onclick="saveTransposition('manual')">💾 Save Current Work</button>
+        </div>
+        <div id="saved-list-empty" class="saved-empty">
+            No saved transpositions yet.<br>Save your work or export a piece to see it here.
+        </div>
+        <div id="saved-list"></div>
+    </div>
+</div>
+
+</div><!-- end .container -->
+
+<!-- Confirm / alert modal (used for delete confirmation, unsaved-work warning, etc.) -->
+<div class="modal-overlay" id="confirm-modal" style="display:none;" onclick="modalCancel(event)">
+    <div class="modal-box">
+        <p id="modal-message">Are you sure?</p>
+        <div class="modal-buttons">
+            <button class="btn" onclick="_confirmResolve && _confirmResolve(false)">Cancel</button>
+            <button class="btn danger" id="modal-ok" onclick="_confirmResolve && _confirmResolve(true)">OK</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// STARTUP DIAGNOSTICS
+// ============================================================
+// Confirm JavaScript is running — turns the orange banner green briefly then hides it.
+// If the banner stays orange, JavaScript is not executing (e.g. iOS QuickLook viewer).
+(function() {
+    const b = document.getElementById('_js-banner');
+    if (!b) return;
+    b.style.background = '#27ae60';
+    b.textContent = '✓ App loaded';
+    setTimeout(() => { b.style.display = 'none'; }, 2000);
+}());
+
+// Catch any runtime JS errors and display them in the banner rather than silently failing.
+let _errShown = false;
+window.onerror = function(msg, src, line) {
+    if (_errShown) return false;
+    _errShown = true;
+    const b = document.getElementById('_js-banner') || document.createElement('div');
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:10px 20px;font-size:12px;' +
+                      'background:#c0392b;color:white;z-index:9999;text-align:center;cursor:pointer;';
+    b.textContent = '⚠ Error (line ' + line + '): ' + msg + ' — tap to reload';
+    b.onclick = () => location.reload();
+    if (!b.parentNode) document.body.prepend(b);
+    return false;
+};
+
+// Verify the VexFlow library loaded. If not, show a clear message instead of
+// silently failing when the script tries to access Vex.Flow below.
+if (typeof Vex === 'undefined') {
+    const b = document.getElementById('_js-banner');
+    if (b) {
+        b.style.cssText = 'padding:12px 20px;font-size:13px;background:#c0392b;' +
+                          'color:white;text-align:center;cursor:pointer;';
+        b.textContent = '⚠ Music library not loaded — check internet connection and reload';
+        b.onclick = () => location.reload();
+        b.style.display = 'block';
+    }
+    throw new Error('VexFlow not loaded');
+}
+
+// ============================================================
+// VEXFLOW SETUP
+// ============================================================
+const VF = Vex.Flow;
+const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Accidental, Dot,
+        StaveTie, StaveConnector, Fraction, Barline } = VF;
+
+// ============================================================
+// APPLICATION STATE
+// ============================================================
+const state = {
+    score: {
+        title: '',
+        timeSignature: '4/4',
+        keySignature: 'C',
+        measures: []   // each: { notes: [...] }
+    },
+    editor: {
+        currentDuration: 'q',
+        currentAccidental: null,  // '#', 'b', or null
+        currentDot: false,
+        currentTie: false,        // when true, next placed note ties from previous
+        allNotes: []  // flat list of entered notes
+    }
+};
+
+// Duration values in quarter-note beats
+const DURATION_BEATS = { 'w': 4, 'h': 2, 'q': 1, '8': 0.5, '16': 0.25, '32': 0.125 };
+
+// Fixed layout constants (stave widths and measures-per-line are computed dynamically)
+const LINE_HEIGHT = 130;
+const MARGIN_LEFT = 10;
+const MARGIN_TOP  = 30;
+
+// ============================================================
+// TAB SWITCHING
+// ============================================================
+function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+        b.classList.toggle('active', (tab === 'import' && i === 0) || (tab === 'editor' && i === 1));
+    });
+    document.getElementById('tab-import').classList.toggle('active', tab === 'import');
+    document.getElementById('tab-editor').classList.toggle('active', tab === 'editor');
+    if (tab === 'editor') initEditorStaff();
+}
+
+// ============================================================
+// MUSICXML PARSER
+// ============================================================
+function parseMusicXML(xmlString) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlString, 'text/xml');
+
+    const parseError = doc.querySelector('parsererror');
+    if (parseError) throw new Error('Invalid XML file');
+
+    const partEl = doc.querySelector('part');
+    if (!partEl) throw new Error('No <part> element found in MusicXML');
+
+    const measures = [];
+    let currentTimeSig = '4/4';
+    let currentKeySig = 'C';
+    let divisions = 1;
+
+    const FIFTHS_TO_KEY = {
+        '-7':'Cb','-6':'Gb','-5':'Db','-4':'Ab','-3':'Eb','-2':'Bb','-1':'F',
+        '0':'C','1':'G','2':'D','3':'A','4':'E','5':'B','6':'F#','7':'C#'
+    };
+    const TYPE_TO_DUR = {
+        'whole':'w','half':'h','quarter':'q','eighth':'8',
+        '16th':'16','32nd':'32','64th':'64'
+    };
+
+    partEl.querySelectorAll('measure').forEach(measureEl => {
+        // Check for attribute changes
+        const attrEl = measureEl.querySelector('attributes');
+        if (attrEl) {
+            const divEl = attrEl.querySelector('divisions');
+            if (divEl) divisions = parseInt(divEl.textContent);
+
+            const fifthsEl = attrEl.querySelector('key > fifths');
+            if (fifthsEl) currentKeySig = FIFTHS_TO_KEY[fifthsEl.textContent] || 'C';
+
+            const beatsEl = attrEl.querySelector('time > beats');
+            const beatTypeEl = attrEl.querySelector('time > beat-type');
+            if (beatsEl && beatTypeEl) currentTimeSig = beatsEl.textContent + '/' + beatTypeEl.textContent;
+        }
+
+        const noteEls = measureEl.querySelectorAll('note');
+        const notes = [];
+
+        noteEls.forEach(noteEl => {
+            const isChord = !!noteEl.querySelector('chord');
+            const restEl = noteEl.querySelector('rest');
+            const pitchEl = noteEl.querySelector('pitch');
+
+            // Determine duration
+            const typeEl = noteEl.querySelector('type');
+            let duration = 'q';
+            if (typeEl) duration = TYPE_TO_DUR[typeEl.textContent] || 'q';
+
+            // Check for dot
+            const dotEls = noteEl.querySelectorAll('dot');
+            const hasDot = dotEls.length > 0;
+
+            if (restEl) {
+                notes.push({
+                    keys: ['b/4'],
+                    duration: duration + 'r',
+                    isRest: true,
+                    isChord: false,
+                    accidental: null,
+                    dot: hasDot
+                });
+            } else if (pitchEl) {
+                const step = pitchEl.querySelector('step').textContent.toLowerCase();
+                const octave = pitchEl.querySelector('octave').textContent;
+                const alterEl = pitchEl.querySelector('alter');
+                const alter = alterEl ? parseInt(alterEl.textContent) : 0;
+
+                let accidental = null;
+                if (alter === 1) accidental = '#';
+                else if (alter === -1) accidental = 'b';
+                else if (alter === 2) accidental = '##';
+                else if (alter === -2) accidental = 'bb';
+
+                const noteData = {
+                    keys: [step + '/' + octave],
+                    duration: duration + (hasDot ? 'd' : ''),
+                    isRest: false,
+                    isChord: isChord,
+                    accidental: accidental,
+                    dot: hasDot
+                };
+
+                if (isChord && notes.length > 0) {
+                    // Merge into previous note as chord
+                    const prev = notes[notes.length - 1];
+                    prev.keys.push(step + '/' + octave);
+                    if (accidental) {
+                        if (!prev.chordAccidentals) prev.chordAccidentals = {};
+                        prev.chordAccidentals[prev.keys.length - 1] = accidental;
+                    }
+                } else {
+                    notes.push(noteData);
+                }
+            }
+        });
+
+        measures.push({
+            notes: notes,
+            timeSignature: currentTimeSig,
+            keySignature: currentKeySig
+        });
+    });
+
+    state.score.measures = measures;
+    state.score.timeSignature = measures.length > 0 ? measures[0].timeSignature : '4/4';
+    state.score.keySignature = measures.length > 0 ? measures[0].keySignature : 'C';
+    state.score.title = (doc.querySelector('work-title') || doc.querySelector('movement-title') || {}).textContent || '';
+
+    return measures;
+}
+
+// ============================================================
+// VEXFLOW RENDERER — DUAL CLEF OUTPUT (TREBLE G + BASS)
+// ============================================================
+// Compute layout parameters from the container's actual pixel width.
+// Tries 4 → 3 → 2 → 1 measures per line; picks the most that keeps each stave ≥ MIN_STAVE wide.
+// FIRST_EXTRA accounts for the extra space the first stave needs for clef + key sig + time sig.
+// Returns the best available pixel width for a container, falling back to the
+// viewport width minus typical margins if the element hasn't laid out yet (clientWidth = 0).
+// This prevents the SVG from being rendered at 800px on narrow mobile screens.
+function containerWidth(el) {
+    if (el && el.clientWidth > 0) return el.clientWidth;
+    // Fallback: viewport minus typical container padding (40px each side)
+    return Math.max((window.innerWidth || 375) - 80, 280);
+}
+
+function computeLayout(availableWidth) {
+    const FIRST_EXTRA = 70;
+    const MIN_STAVE   = 150;
+    const inner       = availableWidth - MARGIN_LEFT - 20;
+    for (const mpl of [4, 3, 2, 1]) {
+        const sw = Math.floor((inner - FIRST_EXTRA) / mpl);
+        if (sw >= MIN_STAVE) {
+            return { measuresPerLine: mpl, staveWidth: sw, firstStaveWidth: sw + FIRST_EXTRA };
+        }
+    }
+    return { measuresPerLine: 1, staveWidth: MIN_STAVE, firstStaveWidth: MIN_STAVE + FIRST_EXTRA };
+}
+
+// Shift every key in a note's keys array by delta octaves (e.g. -1 = down one octave)
+function shiftOctave(keys, delta) {
+    return keys.map(k => {
+        const [note, oct] = k.split('/');
+        return `${note}/${parseInt(oct) + delta}`;
+    });
+}
+
+// Helper: build StaveNote array for a measure in a given clef
+function buildStaveNotes(measureNotes, clef) {
+    const restKey = clef === 'treble' ? 'b/4' : clef === 'tenor' ? 'b/3' : 'b/3';
+    const snArr = [];
+    measureNotes.forEach(n => {
+        try {
+            const sn = new StaveNote({
+                clef,
+                keys: n.isRest ? [restKey] : n.keys,
+                duration: n.duration
+            });
+            if (n.accidental) sn.addModifier(new Accidental(n.accidental), 0);
+            if (n.chordAccidentals) {
+                for (const [idx, acc] of Object.entries(n.chordAccidentals)) {
+                    sn.addModifier(new Accidental(acc), parseInt(idx));
+                }
+            }
+            if (n.dot) { try { Dot.buildAndAttach([sn]); } catch(e) {} }
+            snArr.push(sn);
+        } catch(e) { console.warn('Skipping note:', e.message); }
+    });
+    return snArr;
+}
+
+// Helper: render a single stave's worth of notes
+function renderStaveNotes(context, stave, notes, measureData, beats, beatValue, w, isFirst) {
+    if (notes.length === 0) return;
+    try {
+        const voice = new Voice({ num_beats: beats, beat_value: beatValue });
+        voice.setStrict(false);
+        voice.addTickables(notes);
+        new Formatter().joinVoices([voice]).format([voice], w - (isFirst ? 100 : 50));
+        voice.draw(context, stave);
+        // Auto-beam short notes
+        const beamable = notes.filter(n => !n.isRest() && ['8','16','32'].includes(n.getDuration()));
+        if (beamable.length >= 2) {
+            try { Beam.generateBeams(beamable).forEach(b => b.setContext(context).draw()); } catch(e) {}
+        }
+        // Ties
+        drawTiesForMeasure(context, measureData, notes);
+    } catch(e) { console.warn('Render error:', e.message); }
+}
+
+// Render a single clef (either 'treble' or 'bass') into the given container
+function renderClef(targetId, clef) {
+    const container = document.getElementById(targetId);
+    container.innerHTML = '';
+
+    const measures = state.score.measures;
+    if (!measures || measures.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No music data to display</p></div>';
+        return;
+    }
+
+    const { measuresPerLine, staveWidth, firstStaveWidth } = computeLayout(containerWidth(container));
+    const SINGLE_SYSTEM_HEIGHT = 115;
+
+    const totalLines  = Math.ceil(measures.length / measuresPerLine);
+    const titleHeight = state.score.title ? 32 : 0;
+    const totalHeight = titleHeight + MARGIN_TOP + totalLines * SINGLE_SYSTEM_HEIGHT + 40;
+    const totalWidth  = MARGIN_LEFT + firstStaveWidth + (measuresPerLine - 1) * staveWidth + 20;
+
+    const renderer = new Renderer(container, Renderer.Backends.SVG);
+    renderer.resize(totalWidth, totalHeight);
+    const context = renderer.getContext();
+    context.setFont('Arial', 10);
+
+    // Title
+    if (state.score.title) {
+        context.setFont('Arial', 16, 'bold');
+        context.fillText(state.score.title, totalWidth / 2 - state.score.title.length * 4, 22);
+        context.setFont('Arial', 10);
+    }
+
+    const [beats, beatValue] = state.score.timeSignature.split('/').map(Number);
+
+    for (let i = 0; i < measures.length; i++) {
+        const measure       = measures[i];
+        const lineIndex     = Math.floor(i / measuresPerLine);
+        const measureInLine = i % measuresPerLine;
+        const isFirst       = (i === 0);
+        const isLineStart   = (measureInLine === 0);
+        const w = isFirst ? firstStaveWidth : staveWidth;
+
+        let x = MARGIN_LEFT;
+        for (let j = lineIndex * measuresPerLine; j < i; j++) {
+            x += (j === 0) ? firstStaveWidth : staveWidth;
+        }
+
+        const baseY = titleHeight + MARGIN_TOP + lineIndex * SINGLE_SYSTEM_HEIGHT;
+
+        const stave = new Stave(x, baseY, w);
+        if (isFirst) {
+            stave.addClef(clef);
+            stave.addKeySignature(state.score.keySignature);
+            stave.addTimeSignature(state.score.timeSignature);
+        } else if (isLineStart) {
+            stave.addClef(clef);
+        }
+        if (!isFirst && measure.keySignature !== state.score.keySignature) {
+            stave.addKeySignature(measure.keySignature);
+        }
+        stave.setContext(context).draw();
+
+        if (measure.notes.length === 0) continue;
+
+        // Shift notes for cello reading: bass clef -2 octaves, tenor clef -1 octave.
+        // Rests and source state data are not affected.
+        const notesForRender = (clef === 'bass')
+            ? measure.notes.map(n => n.isRest ? n : { ...n, keys: shiftOctave(n.keys, -2) })
+            : (clef === 'tenor')
+            ? measure.notes.map(n => n.isRest ? n : { ...n, keys: shiftOctave(n.keys, -1) })
+            : measure.notes;
+
+        const staveNotes = buildStaveNotes(notesForRender, clef);
+        renderStaveNotes(context, stave, staveNotes, notesForRender, beats, beatValue, w, isFirst);
+    }
+}
+
+// After renderClef, scan the rendered SVG DOM and stamp sequential IDs onto note elements.
+// VexFlow creates exactly one <g class="vf-stavenote"> per note (rest or pitched), in DOM order.
+// We walk the flat note list in parallel so we know which groups are rests and skip them,
+// assigning ${clef}-note-0, ${clef}-note-1, … only to pitched notes.
+function assignPlaybackIds(targetId, clef) {
+    const container  = document.getElementById(targetId);
+    const noteGroups = Array.from(container.querySelectorAll('g.vf-stavenote'));
+    const allNotes   = (state.score.measures || []).flatMap(m => m.notes || []);
+
+    let groupIdx   = 0;
+    let pitchedIdx = 0;
+    allNotes.forEach(note => {
+        if (groupIdx >= noteGroups.length) return;
+        const group = noteGroups[groupIdx];
+        if (!note.isRest) {
+            group.id = `${clef}-note-${pitchedIdx}`;
+            pitchedIdx++;
+        }
+        groupIdx++;
+    });
+}
+
+// Convenience: render all three outputs at once
+function renderAllOutputs() {
+    clearAllHighlights();   // remove any active note highlight before SVG is rebuilt
+    renderClef('bass-output-container', 'bass');
+    assignPlaybackIds('bass-output-container', 'bass');
+    renderClef('tenor-output-container', 'tenor');
+    assignPlaybackIds('tenor-output-container', 'tenor');
+    renderClef('treble-output-container', 'treble');
+    assignPlaybackIds('treble-output-container', 'treble');
+}
+
+// ============================================================
+// TIE RENDERING HELPER
+// ============================================================
+function drawTiesForMeasure(context, noteDataArr, staveNotesArr) {
+    // noteDataArr: raw note data objects (with tieStart / tieEnd flags)
+    // staveNotesArr: corresponding VexFlow StaveNote objects (rests excluded from pairing)
+
+    // Build a parallel map: noteData index → staveNote index
+    // (they should be 1-to-1 since both skip failed notes, but we guard carefully)
+    const n = Math.min(noteDataArr.length, staveNotesArr.length);
+
+    for (let j = 0; j < n; j++) {
+        const nd = noteDataArr[j];
+        if (!nd || nd.isRest) continue;
+
+        // --- Within-measure tie: nd[j] starts a tie and nd[j+1] exists in same measure ---
+        if (nd.tieStart && j + 1 < n && !noteDataArr[j + 1].isRest) {
+            try {
+                new StaveTie({
+                    first_note: staveNotesArr[j],
+                    last_note: staveNotesArr[j + 1],
+                    first_indices: [0],
+                    last_indices: [0]
+                }).setContext(context).draw();
+            } catch(e) { /* skip bad tie */ }
+        }
+
+        // --- Open-end tie: nd[j] is the LAST pitched note and has tieStart
+        //     (meaning the tie continues into next measure) ---
+        const isLastPitchedInMeasure = (j === n - 1) ||
+            noteDataArr.slice(j + 1, n).every(x => x.isRest);
+        if (nd.tieStart && isLastPitchedInMeasure) {
+            try {
+                new StaveTie({
+                    first_note: staveNotesArr[j],
+                    last_note: null,
+                    first_indices: [0],
+                    last_indices: [0]
+                }).setContext(context).draw();
+            } catch(e) { /* skip */ }
+        }
+    }
+
+    // --- Open-start tie: first pitched note of this measure has tieEnd ---
+    for (let j = 0; j < n; j++) {
+        const nd = noteDataArr[j];
+        if (!nd || nd.isRest) continue;
+        if (nd.tieEnd) {
+            try {
+                new StaveTie({
+                    first_note: null,
+                    last_note: staveNotesArr[j],
+                    first_indices: [0],
+                    last_indices: [0]
+                }).setContext(context).draw();
+            } catch(e) { /* skip */ }
+        }
+        break; // only check the first pitched note for tieEnd
+    }
+}
+
+// ============================================================
+// INTERACTIVE EDITOR — TREBLE STAFF (MULTI-LINE)
+// ============================================================
+const EDITOR_LINE_HEIGHT = 150;  // px between editor staff rows
+const EDITOR_STAVE_Y     = 35;   // y offset of stave within its row
+
+// Per-row stave geometry — populated during render, used by click/hover
+let editorRowInfos = [];  // [{ topY, lineSpacing, rowIndex }, ...]
+let editorInteractionSetup = false;  // guard: attach pointer listeners only once
+
+function initEditorStaff() {
+    renderEditorStaff();
+    if (!editorInteractionSetup) {
+        setupEditorInteraction();
+        editorInteractionSetup = true;
+    }
+}
+
+function renderEditorStaff() {
+    const container = document.getElementById('editor-staff');
+    container.innerHTML = '';
+    editorRowInfos = [];
+
+    const notes   = state.editor.allNotes;
+    const timeSig = document.getElementById('time-sig').value;
+    const keySig  = document.getElementById('key-sig').value;
+
+    const [beats, beatValue] = timeSig.split('/').map(Number);
+    const beatsPerMeasure = beats * (4 / beatValue);
+
+    // Split flat note list into measures
+    const measures = [];
+    let currentMeasure = [], currentBeats = 0;
+    notes.forEach(n => {
+        const dur = n.duration.replace('d', '').replace('r', '');
+        let nb = DURATION_BEATS[dur] || 1;
+        if (n.dot || n.duration.includes('d')) nb *= 1.5;
+        if (currentBeats + nb > beatsPerMeasure && currentMeasure.length > 0) {
+            measures.push([...currentMeasure]);
+            currentMeasure = [];
+            currentBeats = 0;
+        }
+        currentMeasure.push(n);
+        currentBeats += nb;
+    });
+    if (currentMeasure.length > 0) measures.push(currentMeasure);
+    if (measures.length === 0) measures.push([]);
+
+    const edContainer = document.getElementById('editor-staff-container');
+    const { measuresPerLine, staveWidth, firstStaveWidth } = computeLayout(containerWidth(edContainer));
+    const numMeasures = measures.length;
+    const numRows     = Math.ceil(numMeasures / measuresPerLine);
+    const svgWidth    = MARGIN_LEFT + firstStaveWidth + (measuresPerLine - 1) * staveWidth + 20;
+    const svgHeight   = numRows * EDITOR_LINE_HEIGHT + 20;
+
+    const renderer = new Renderer(container, Renderer.Backends.SVG);
+    renderer.resize(svgWidth, svgHeight);
+    const context = renderer.getContext();
+
+    for (let i = 0; i < numMeasures; i++) {
+        const rowIndex      = Math.floor(i / measuresPerLine);
+        const colIndex      = i % measuresPerLine;
+        const isFirst       = (i === 0);
+        const isRowStart    = (colIndex === 0);
+        const w = isFirst ? firstStaveWidth : staveWidth;
+
+        let x = MARGIN_LEFT;
+        for (let j = rowIndex * measuresPerLine; j < i; j++) {
+            x += (j === 0) ? firstStaveWidth : staveWidth;
+        }
+        const y = rowIndex * EDITOR_LINE_HEIGHT + EDITOR_STAVE_Y;
+
+        const stave = new Stave(x, y, w);
+        if (isFirst) {
+            stave.addClef('treble');
+            stave.addKeySignature(keySig);
+            stave.addTimeSignature(timeSig);
+        } else if (isRowStart) {
+            stave.addClef('treble');
+        }
+        stave.setContext(context).draw();
+
+        // Record row geometry once per row (at its first measure)
+        if (isRowStart) {
+            const topY      = stave.getYForLine(0);
+            const bottomY   = stave.getYForLine(4);
+            editorRowInfos.push({
+                topY,
+                bottomY,
+                lineSpacing: (bottomY - topY) / 4,
+                rowIndex,
+                svgRowTop:  y - 20,   // a bit above the staff for hit detection
+                svgRowBottom: y + (bottomY - topY) + 30
+            });
+        }
+
+        const measureNotes = measures[i] || [];
+        if (measureNotes.length === 0) continue;
+
+        const staveNotes = buildStaveNotes(measureNotes, 'treble');
+        renderStaveNotes(context, stave, staveNotes, measureNotes, beats, beatValue, w, isFirst);
+    }
+
+    // Sync score state and update dual-clef output
+    if (notes.length > 0) {
+        state.score.measures      = measures.map(m => ({ notes: m, timeSignature: timeSig, keySignature: keySig }));
+        state.score.timeSignature = timeSig;
+        state.score.keySignature  = keySig;
+        state.score.title         = document.getElementById('piece-title').value || '';
+        renderAllOutputs();
+    }
+
+    // Resize the outer container to match SVG height
+    const outerContainer = document.getElementById('editor-staff-container');
+    outerContainer.style.minHeight = svgHeight + 'px';
+}
+
+function setupEditorInteraction() {
+    const container = document.getElementById('editor-staff-container');
+    const ghost = document.getElementById('ghost-note');
+
+    // --- helpers ---
+
+    function findRowForSvgY(svgY) {
+        if (editorRowInfos.length === 0) return null;
+        let best = editorRowInfos[0], bestDist = Infinity;
+        for (const info of editorRowInfos) {
+            const staffCenter = (info.topY + info.bottomY) / 2;
+            const dist = Math.abs(svgY - staffCenter);
+            if (dist < bestDist) { bestDist = dist; best = info; }
+        }
+        return best;
+    }
+
+    // Update the ghost note oval to the snapped position nearest (clientX, clientY).
+    // Works for both mouse hover and touch contact.
+    function updateGhost(clientX, clientY) {
+        if (editorRowInfos.length === 0) return;
+        const svg = container.querySelector('svg');
+        if (!svg) return;
+        const svgRect  = svg.getBoundingClientRect();
+        const contRect = container.getBoundingClientRect();
+        const svgY     = clientY - svgRect.top;
+        const row      = findRowForSvgY(svgY);
+        if (!row) return;
+
+        const position = (svgY - row.topY) / row.lineSpacing;
+        const snapped  = Math.round(position * 2) / 2;
+        const clamped  = Math.max(-2, Math.min(6, snapped));
+
+        ghost.style.display = 'block';
+        ghost.style.left    = (clientX - contRect.left) + 'px';
+        ghost.style.top     = (row.topY + clamped * row.lineSpacing) + 'px';
+        ghost.dataset.position = clamped;
+        ghost.title = treblePositionToNote(clamped).toUpperCase();
+    }
+
+    // Commit the note currently indicated by the ghost position.
+    function commitNote() {
+        if (editorRowInfos.length === 0) return;
+        const pos = parseFloat(ghost.dataset.position);
+        if (isNaN(pos)) return;
+
+        const noteKey = treblePositionToNote(pos);
+        const dur     = state.editor.currentDuration;
+        const acc     = state.editor.currentAccidental;
+        const dot     = state.editor.currentDot;
+        const tieMode = state.editor.currentTie;
+
+        const noteData = {
+            keys: [noteKey],
+            duration: dur + (dot ? 'd' : ''),
+            isRest: false, isChord: false,
+            accidental: acc, dot: dot,
+            tieStart: false,
+            tieEnd: tieMode
+        };
+
+        if (tieMode) {
+            for (let i = state.editor.allNotes.length - 1; i >= 0; i--) {
+                if (!state.editor.allNotes[i].isRest) {
+                    state.editor.allNotes[i].tieStart = true;
+                    break;
+                }
+            }
+        }
+
+        state.editor.allNotes.push(noteData);
+
+        // Reset one-shot modifiers (tie stays active until toggled off)
+        state.editor.currentAccidental = null;
+        state.editor.currentDot = false;
+        document.getElementById('btn-sharp').classList.remove('active');
+        document.getElementById('btn-flat').classList.remove('active');
+        document.getElementById('btn-dot').classList.remove('active');
+
+        renderEditorStaff();
+    }
+
+    // --- Pointer Events (unifies mouse + touch + stylus) ---
+
+    // Track the position where the pointer went down so we can distinguish
+    // a tap (no significant movement) from a drag (scroll / accidental touch).
+    let downX = null, downY = null;
+    const DRAG_THRESHOLD_PX = 8;
+
+    // pointermove fires on mouse hover AND while a touch/stylus is in contact.
+    container.addEventListener('pointermove', (e) => {
+        // For touch/stylus: only update ghost while the pointer is pressed down.
+        // For mouse: always update (hover preview).
+        if (e.pointerType !== 'mouse' && downX === null) return;
+        updateGhost(e.clientX, e.clientY);
+    });
+
+    // pointerdown: record start position; show ghost immediately for touch/stylus.
+    container.addEventListener('pointerdown', (e) => {
+        downX = e.clientX;
+        downY = e.clientY;
+        if (e.pointerType !== 'mouse') updateGhost(e.clientX, e.clientY);
+    });
+
+    // pointerup: commit a note if the gesture didn't travel far (tap, not drag).
+    container.addEventListener('pointerup', (e) => {
+        if (downX === null) return;
+        const dist = Math.hypot(e.clientX - downX, e.clientY - downY);
+        downX = null;
+        downY = null;
+
+        if (dist <= DRAG_THRESHOLD_PX) {
+            // Final position for touch before committing
+            if (e.pointerType !== 'mouse') updateGhost(e.clientX, e.clientY);
+            commitNote();
+        }
+        // Hide ghost after touch/stylus lift; mouse keeps its hover ghost visible
+        if (e.pointerType !== 'mouse') ghost.style.display = 'none';
+    });
+
+    // Hide ghost when pointer leaves the container or is cancelled (e.g. iOS gesture)
+    container.addEventListener('pointerleave',  () => { ghost.style.display = 'none'; });
+    container.addEventListener('pointercancel', () => {
+        ghost.style.display = 'none';
+        downX = null;
+        downY = null;
+    });
+}
+
+function treblePositionToNote(position) {
+    // Position 0 = top line (F5), position 4 = bottom line (E4)
+    // Going down: F5, E5, D5, C5, B4, A4, G4, F4, E4, D4, C4...
+    // Steps from bottom line E4: stepsUp = (4 - position) * 2
+    const steps = Math.round((4 - position) * 2);
+    const absolute = 2 + steps; // E is index 2 in C-based scale (C=0, D=1, E=2...)
+    const noteNames = ['c', 'd', 'e', 'f', 'g', 'a', 'b'];
+    const idx = ((absolute % 7) + 7) % 7;
+    const octave = 4 + Math.floor(absolute / 7);
+    return noteNames[idx] + '/' + octave;
+}
+
+// ============================================================
+// EDITOR CONTROLS
+// ============================================================
+function setDuration(dur, btn) {
+    state.editor.currentDuration = dur;
+    document.querySelectorAll('.toolbar-group:first-child .btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+}
+
+function toggleAccidental(acc) {
+    const btnId = acc === '#' ? 'btn-sharp' : 'btn-flat';
+    const otherBtnId = acc === '#' ? 'btn-flat' : 'btn-sharp';
+
+    if (state.editor.currentAccidental === acc) {
+        state.editor.currentAccidental = null;
+        document.getElementById(btnId).classList.remove('active');
+    } else {
+        state.editor.currentAccidental = acc;
+        document.getElementById(btnId).classList.add('active');
+        document.getElementById(otherBtnId).classList.remove('active');
+    }
+}
+
+function toggleDot() {
+    state.editor.currentDot = !state.editor.currentDot;
+    document.getElementById('btn-dot').classList.toggle('active');
+}
+
+function toggleTie() {
+    state.editor.currentTie = !state.editor.currentTie;
+    document.getElementById('btn-tie').classList.toggle('active');
+}
+
+function addRest() {
+    const dur = state.editor.currentDuration;
+    state.editor.allNotes.push({
+        keys: ['b/4'],
+        duration: dur + 'r',
+        isRest: true,
+        isChord: false,
+        accidental: null,
+        dot: false
+    });
+    renderEditorStaff();
+}
+
+function undoLastNote() {
+    if (state.editor.allNotes.length > 0) {
+        state.editor.allNotes.pop();
+        // If the new last note was a tieStart pointing to the removed note, clear that flag
+        const notes = state.editor.allNotes;
+        if (notes.length > 0 && notes[notes.length - 1].tieStart) {
+            notes[notes.length - 1].tieStart = false;
+        }
+        renderEditorStaff();
+        if (state.editor.allNotes.length === 0) {
+            document.getElementById('bass-output-container').innerHTML =
+                '<div class="empty-state"><p>No music data to display</p></div>';
+            document.getElementById('tenor-output-container').innerHTML =
+                '<div class="empty-state"><p>No music data to display</p></div>';
+            document.getElementById('treble-output-container').innerHTML =
+                '<div class="empty-state"><p>No music data to display</p></div>';
+        }
+    }
+}
+
+function clearEditor() {
+    state.editor.allNotes = [];
+    state.editor.currentTie = false;
+    document.getElementById('btn-tie').classList.remove('active');
+    renderEditorStaff();
+    document.getElementById('bass-output-container').innerHTML =
+        '<div class="empty-state"><p>Import a MusicXML file or use the interactive editor to get started</p></div>';
+    document.getElementById('tenor-output-container').innerHTML =
+        '<div class="empty-state"><p>Import a MusicXML file or use the interactive editor to get started</p></div>';
+    document.getElementById('treble-output-container').innerHTML =
+        '<div class="empty-state"><p>Import a MusicXML file or use the interactive editor to get started</p></div>';
+}
+
+function updateSettings() {
+    if (state.editor.allNotes.length > 0) {
+        renderEditorStaff();
+    } else {
+        initEditorStaff();
+        // If there's an imported score, re-render outputs with the updated settings.
+        // The time sig affects measure grouping for display; key sig affects accidental display.
+        if (state.score.measures && state.score.measures.length > 0) {
+            const timeSig = document.getElementById('time-sig').value;
+            const keySig  = document.getElementById('key-sig').value;
+            const [beats, beatValue] = timeSig.split('/').map(Number);
+            const beatsPerMeasure = beats * (4 / beatValue);
+            // Re-flatten all notes and re-split by new time signature
+            const allNotes = state.score.measures.flatMap(m => m.notes || []);
+            const measures = [];
+            let cur = [], curBeats = 0;
+            allNotes.forEach(n => {
+                const base = n.duration.replace('d','').replace('r','');
+                let nb = DURATION_BEATS[base] || 1;
+                if (n.dot || n.duration.includes('d')) nb *= 1.5;
+                if (curBeats + nb > beatsPerMeasure && cur.length > 0) {
+                    measures.push(cur);
+                    cur = [];
+                    curBeats = 0;
+                }
+                cur.push(n);
+                curBeats += nb;
+            });
+            if (cur.length > 0) measures.push(cur);
+            state.score.measures      = measures.map(m => ({ notes: m, timeSignature: timeSig, keySignature: keySig }));
+            state.score.timeSignature = timeSig;
+            state.score.keySignature  = keySig;
+            renderAllOutputs();
+        }
+    }
+}
+
+// ============================================================
+// FILE IMPORT
+// ============================================================
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('drag-over'); });
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) processFile(file);
+});
+fileInput.addEventListener('change', (e) => { if (e.target.files[0]) processFile(e.target.files[0]); });
+
+function processFile(file) {
+    const statusEl = document.getElementById('import-status');
+    statusEl.innerHTML = '<div class="status info">Reading file...</div>';
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const xml = e.target.result;
+            const measures = parseMusicXML(xml);
+            statusEl.innerHTML = `<div class="status success">Parsed ${measures.length} measure(s) successfully. Rendering outputs below.</div>`;
+            // Sync UI dropdowns to the imported file's time/key signature
+            if (state.score.timeSignature) {
+                const tsEl = document.getElementById('time-sig');
+                const matchOpt = Array.from(tsEl.options).find(o => o.value === state.score.timeSignature);
+                if (matchOpt) tsEl.value = state.score.timeSignature;
+            }
+            if (state.score.keySignature) {
+                const ksEl = document.getElementById('key-sig');
+                const matchOpt = Array.from(ksEl.options).find(o => o.value === state.score.keySignature);
+                if (matchOpt) ksEl.value = state.score.keySignature;
+            }
+            renderAllOutputs();
+        } catch (err) {
+            statusEl.innerHTML = `<div class="status error">Error: ${err.message}</div>`;
+            console.error(err);
+        }
+    };
+    reader.onerror = () => {
+        statusEl.innerHTML = '<div class="status error">Failed to read file.</div>';
+    };
+    reader.readAsText(file);
+}
+
+// ============================================================
+// EXAMPLE LOADER
+// ============================================================
+function loadExample() {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="3.1">
+  <movement-title>C Major Scale</movement-title>
+  <part-list>
+    <score-part id="P1"><part-name>Treble</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+    </measure>
+    <measure number="2">
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>B</step><octave>4</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><type>quarter</type></note>
+    </measure>
+    <measure number="3">
+      <note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><type>quarter</type></note>
+      <note><pitch><step>G</step><octave>5</octave></pitch><duration>1</duration><type>quarter</type></note>
+    </measure>
+    <measure number="4">
+      <note><pitch><step>G</step><octave>5</octave></pitch><duration>2</duration><type>half</type></note>
+      <note><rest/><duration>2</duration><type>half</type></note>
+    </measure>
+  </part>
+</score-partwise>`;
+
+    try {
+        const measures = parseMusicXML(xml);
+        document.getElementById('import-status').innerHTML =
+            `<div class="status success">Loaded example: C Major Scale (${measures.length} measures). Outputs rendered below.</div>`;
+        renderAllOutputs();
+    } catch (err) {
+        document.getElementById('import-status').innerHTML =
+            `<div class="status error">Error loading example: ${err.message}</div>`;
+    }
+}
+
+// ============================================================
+// PDF EXPORT
+// ============================================================
+function exportPDF(section) {
+    const containerId = section === 'treble' ? 'treble-output-container'
+                      : section === 'tenor'  ? 'tenor-output-container'
+                      : 'bass-output-container';
+    const sectionLabel = section === 'treble' ? 'Treble G Clef'
+                       : section === 'tenor'  ? 'Tenor Clef'
+                       : 'Bass Clef';
+    const svgEl = document.querySelector('#' + containerId + ' svg');
+    if (!svgEl) {
+        alert('No music to export. Import a file or use the editor first.');
+        return;
+    }
+    // Auto-save on export (title required; shows inline warning if missing)
+    saveTransposition('export');
+
+    // Clone SVG and set white background
+    const clone = svgEl.cloneNode(true);
+    clone.style.backgroundColor = 'white';
+
+    const svgData = new XMLSerializer().serializeToString(clone);
+    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+
+    const img = new Image();
+    img.onload = () => {
+        const scale = 2;
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.scale(scale, scale);
+        ctx.drawImage(img, 0, 0);
+
+        const { jsPDF } = window.jspdf;
+        // Use landscape letter
+        const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+        const pdfW = pdf.internal.pageSize.getWidth() - 20;
+        const pdfH = pdf.internal.pageSize.getHeight() - 20;
+
+        // Scale image to fit page
+        const imgAspect = img.width / img.height;
+        const pageAspect = pdfW / pdfH;
+        let drawW, drawH;
+        if (imgAspect > pageAspect) {
+            drawW = pdfW;
+            drawH = pdfW / imgAspect;
+        } else {
+            drawH = pdfH;
+            drawW = pdfH * imgAspect;
+        }
+
+        const title = state.score.title || sectionLabel;
+        pdf.setFontSize(16);
+        pdf.text(title, 10, 14);
+        pdf.setFontSize(8);
+        pdf.text(sectionLabel + ' notation', 10, 20);
+
+        pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 10, 24, drawW, drawH);
+
+        const fileSlug = (state.score.title || sectionLabel).toLowerCase().replace(/\s+/g, '-');
+        const filename  = fileSlug + '-' + section + '.pdf';
+
+        // iOS Safari does not honour the download attribute or pdf.save() triggers.
+        // Instead, open the PDF as a blob URI in a new tab — the user can then tap
+        // Share → Save to Files from Safari's native PDF viewer.
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        if (isIOS) {
+            const pdfBlob   = pdf.output('blob');
+            const pdfBlobUrl = URL.createObjectURL(pdfBlob);
+            window.open(pdfBlobUrl, '_blank');
+            // pdfBlobUrl is intentionally not revoked — Safari needs it alive in the new tab
+        } else {
+            pdf.save(filename);
+        }
+
+        URL.revokeObjectURL(url); // revoke the SVG object URL used to rasterise the image
+    };
+    img.onerror = () => {
+        alert('Error generating PDF. Try using the Print button instead.');
+        URL.revokeObjectURL(url);
+    };
+    img.src = url;
+}
+
+// ============================================================
+// AUDIO PLAYBACK (Tone.js — cello soundfont + PolySynth fallback)
+// ============================================================
+// REVERSIBILITY FLAG: set SOUNDFONT_ENABLED = false to revert to the triangle-wave
+// PolySynth immediately, with no other changes needed anywhere in this file.
+const SOUNDFONT_ENABLED = true;
+
+// Cello sample map: Tone.js note name → filename in ./samples/cello/
+// Sampler pitch-shifts between these to cover the full range.
+// Notes spaced ~3 semitones across C2–Eb5 (practical cello range).
+const CELLO_SAMPLES = {
+    'C2':'C2.mp3',  'Eb2':'Eb2.mp3', 'Gb2':'Gb2.mp3', 'A2':'A2.mp3',
+    'C3':'C3.mp3',  'Eb3':'Eb3.mp3', 'Gb3':'Gb3.mp3', 'A3':'A3.mp3',
+    'C4':'C4.mp3',  'Eb4':'Eb4.mp3', 'Gb4':'Gb4.mp3', 'A4':'A4.mp3',
+    'C5':'C5.mp3',  'Eb5':'Eb5.mp3',
+};
+const CELLO_SAMPLES_BASE = './samples/cello/';
+
+// VexFlow duration code → Tone.js note value
+const VF_DUR_TO_TONE = {
+    'w': '1n', 'h': '2n', 'q': '4n', '8': '8n', '16': '16n', '32': '32n'
+};
+
+// Key signature → which note letter names carry an implicit accidental.
+// An explicit accidental on a note always overrides this; a natural sign ('n') cancels it.
+const KEY_ACCIDENTALS = {
+    'C':  {},
+    'G':  { F: '#' },
+    'D':  { F: '#', C: '#' },
+    'A':  { F: '#', C: '#', G: '#' },
+    'E':  { F: '#', C: '#', G: '#', D: '#' },
+    'B':  { F: '#', C: '#', G: '#', D: '#', A: '#' },
+    'F#': { F: '#', C: '#', G: '#', D: '#', A: '#', E: '#' },
+    'F':  { B: 'b' },
+    'Bb': { B: 'b', E: 'b' },
+    'Eb': { B: 'b', E: 'b', A: 'b' },
+    'Ab': { B: 'b', E: 'b', A: 'b', D: 'b' },
+    'Db': { B: 'b', E: 'b', A: 'b', D: 'b', G: 'b' },
+};
+
+let audioSynth          = null;   // Tone.PolySynth — used when soundfont unavailable
+let audioSampler        = null;   // Tone.Sampler  — cello soundfont (when enabled)
+let samplerReady        = false;  // true once all sample files have loaded
+let _playbackSession    = 0;      // incremented on stop; stale callbacks check this
+let audioStopId         = null;   // setTimeout handle for auto-reset
+let highlightTimeouts   = [];     // setTimeout handles for per-note highlights
+let currentHighlightIdx = -1;     // index of the currently highlighted note (-1 = none)
+
+// Apply an orange highlight to the nth non-rest note in all output containers
+function highlightNote(idx) {
+    // Remove previous highlight
+    if (currentHighlightIdx >= 0) {
+        ['bass', 'tenor', 'treble'].forEach(clef => {
+            const el = document.getElementById(`${clef}-note-${currentHighlightIdx}`);
+            if (el) el.classList.remove('playing');
+        });
+    }
+    // Apply new highlight
+    ['bass', 'tenor', 'treble'].forEach(clef => {
+        const el = document.getElementById(`${clef}-note-${idx}`);
+        if (el) {
+            el.classList.add('playing');
+        } else {
+            console.warn(`Highlight: element #${clef}-note-${idx} not found in DOM`);
+        }
+    });
+    currentHighlightIdx = idx;
+}
+
+// Remove all highlights and cancel pending highlight timeouts
+function clearAllHighlights() {
+    highlightTimeouts.forEach(t => clearTimeout(t));
+    highlightTimeouts = [];
+    if (currentHighlightIdx >= 0) {
+        ['bass', 'tenor', 'treble'].forEach(clef => {
+            const el = document.getElementById(`${clef}-note-${currentHighlightIdx}`);
+            if (el) el.classList.remove('playing');
+        });
+    }
+    // Belt-and-suspenders: sweep any lingering highlights left from a re-render
+    document.querySelectorAll('.vf-stavenote.playing').forEach(el => el.classList.remove('playing'));
+    currentHighlightIdx = -1;
+}
+
+// Convert a VexFlow note key + accidental to Tone.js pitch string
+// e.g. ("c/4", "#") → "C#4"   ("f/5", null) → "F5"
+function noteKeyToTone(noteKey, accidental) {
+    const [step, octave] = noteKey.split('/');
+    let name = step.toUpperCase();
+    if (accidental === '#')  name += '#';
+    if (accidental === 'b')  name += 'b';
+    if (accidental === '##') name += '##';
+    if (accidental === 'bb') name += 'bb';
+    return name + octave;
+}
+
+// Convert a VexFlow duration string to a Tone.js duration string
+// e.g. 'q' → '4n'   'hd' → '2n.'   '8r' → '8n'
+function vfDurToTone(vfDur) {
+    const isDot  = vfDur.includes('d');
+    const base   = vfDur.replace('d', '').replace('r', '');
+    const tone   = VF_DUR_TO_TONE[base] || '4n';
+    return isDot ? tone + '.' : tone;
+}
+
+// Build a flat list of {timeS, pitches[], toneDur, noteIndex} events from state.score.measures
+function buildPlaybackSequence() {
+    const bpm          = parseInt(document.getElementById('playback-bpm').value) || 100;
+    const secPerBeat   = 60 / bpm;   // seconds per quarter-note beat
+    const events       = [];
+    let   timeQ        = 0;          // running position in quarter-note beats
+    let   noteIdx      = 0;          // non-rest note counter, matches IDs assigned in renderClef
+
+    // Resolve key signature accidentals so playback matches the written key
+    const keySig      = state.score.keySignature || document.getElementById('key-sig').value || 'C';
+    const keyAccMap   = KEY_ACCIDENTALS[keySig] || {};
+
+    (state.score.measures || []).forEach(measure => {
+        (measure.notes || []).forEach(note => {
+            // Calculate duration in quarter-note beats
+            const base  = note.duration.replace('d', '').replace('r', '');
+            let   beats = DURATION_BEATS[base] || 1;
+            if (note.dot || note.duration.includes('d')) beats *= 1.5;
+
+            if (!note.isRest) {
+                // Build pitch list, applying key signature accidentals when no explicit
+                // accidental is present. A natural sign ('n') cancels the key sig.
+                const pitches = note.keys.map((k, i) => {
+                    const explicit = i === 0
+                        ? note.accidental
+                        : (note.chordAccidentals ? note.chordAccidentals[i] : null);
+                    const step = k.split('/')[0].toUpperCase();
+                    let effectiveAcc;
+                    if (explicit === 'n') {
+                        effectiveAcc = null;            // natural sign overrides key sig
+                    } else if (explicit) {
+                        effectiveAcc = explicit;        // explicit # / b takes precedence
+                    } else {
+                        effectiveAcc = keyAccMap[step] || null;  // fall back to key sig
+                    }
+                    return noteKeyToTone(k, effectiveAcc);
+                });
+
+                events.push({
+                    timeS:     timeQ * secPerBeat,
+                    pitches,
+                    toneDur:   vfDurToTone(note.duration),
+                    noteIndex: noteIdx   // matches ${clef}-note-${noteIdx} IDs set during render
+                });
+                noteIdx++;
+            }
+
+            timeQ += beats;
+        });
+    });
+
+    return { events, totalTimeS: timeQ * secPerBeat };
+}
+
+// Create the PolySynth fallback (triangle-wave synth, no samples required).
+function ensureSynth() {
+    if (SOUNDFONT_ENABLED && samplerReady && audioSampler) return; // sampler handles it
+    if (!audioSynth) {
+        audioSynth = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: 'triangle' },
+            envelope:   { attack: 0.02, decay: 0.1, sustain: 0.5, release: 0.8 },
+            volume:     -8
+        }).toDestination();
+    }
+}
+
+// Load cello samples into a Tone.Sampler. Called once on page load.
+// On success: samplerReady = true, Play button enabled.
+// On failure (samples folder missing / offline): silently falls back to PolySynth.
+function initSampler() {
+    if (!SOUNDFONT_ENABLED) return;
+    setPlaybackStatus('loading');
+    try {
+        audioSampler = new Tone.Sampler({
+            urls:    CELLO_SAMPLES,
+            baseUrl: CELLO_SAMPLES_BASE,
+            onload: () => {
+                samplerReady = true;
+                setPlaybackStatus('ready');
+                setTimeout(() => setPlaybackStatus(''), 1800);
+            },
+            onerror: () => {
+                console.warn('Cello samples not found — falling back to synth. ' +
+                             'Run download-samples.sh to enable the soundfont.');
+                audioSampler = null;
+                samplerReady = false;
+                setPlaybackStatus('');
+            }
+        }).toDestination();
+    } catch (e) {
+        audioSampler = null;
+        setPlaybackStatus('');
+    }
+}
+
+async function playMusic() {
+    if (!state.score.measures || state.score.measures.length === 0) {
+        alert('No music to play. Import a file or use the editor first.');
+        return;
+    }
+
+    stopMusic();                    // cancel any in-progress playback
+    await Tone.start();             // resume AudioContext (required on first user gesture)
+
+    const useSampler = SOUNDFONT_ENABLED && samplerReady && audioSampler;
+    if (!useSampler) ensureSynth();
+    const instrument = useSampler ? audioSampler : audioSynth;
+
+    const { events, totalTimeS } = buildPlaybackSequence();
+    if (events.length === 0) return;
+
+    // Each play gets a session ID — stale highlight callbacks check this before firing.
+    const session = ++_playbackSession;
+
+    // Schedule every note relative to a shared start time slightly in the future.
+    const AUDIO_LEAD_MS = 50;
+    const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
+    events.forEach(ev => {
+        instrument.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
+    });
+
+    // Schedule per-note visual highlights to fire in sync with audio
+    clearAllHighlights();
+    highlightTimeouts = events.map(ev => {
+        return setTimeout(() => {
+            if (_playbackSession !== session) return; // stale — playback was stopped
+            highlightNote(ev.noteIndex);
+        }, AUDIO_LEAD_MS + Math.round(ev.timeS * 1000));
+    });
+
+    // Auto-reset the UI once playback has finished
+    audioStopId = setTimeout(() => {
+        if (_playbackSession !== session) return;
+        resetPlaybackUI();
+    }, (totalTimeS + 0.6) * 1000);
+
+    setPlaybackStatus('playing');
+}
+
+function stopMusic() {
+    _playbackSession++;             // invalidate any pending highlight / auto-reset callbacks
+
+    if (audioStopId) { clearTimeout(audioStopId); audioStopId = null; }
+
+    // Sampler: release active notes but keep it loaded (reloading samples is expensive)
+    if (audioSampler) { try { audioSampler.releaseAll(); } catch (e) {} }
+
+    // PolySynth: dispose to cancel all scheduled future events
+    if (audioSynth) { audioSynth.dispose(); audioSynth = null; }
+
+    clearAllHighlights();
+    resetPlaybackUI();
+}
+
+function resetPlaybackUI() {
+    const btnPlay = document.getElementById('btn-play');
+    const btnStop = document.getElementById('btn-stop');
+    if (btnPlay) btnPlay.disabled = false;
+    if (btnStop) btnStop.disabled = true;
+    setPlaybackStatus('');
+}
+
+function setPlaybackStatus(status) {
+    const el = document.getElementById('playback-status');
+    if (!el) return;
+    if (status === 'playing') {
+        el.textContent = '● Playing…';
+        el.style.color = '#27ae60';
+        document.getElementById('btn-play').disabled = true;
+        document.getElementById('btn-stop').disabled = false;
+    } else if (status === 'loading') {
+        el.textContent = '⏳ Loading instrument…';
+        el.style.color = '#888';
+        document.getElementById('btn-play').disabled = true;
+    } else if (status === 'ready') {
+        el.textContent = '🎻 Cello soundfont ready';
+        el.style.color = '#27ae60';
+        document.getElementById('btn-play').disabled = false;
+    } else {
+        el.textContent = '';
+    }
+}
+
+// ============================================================
+// SAVED TRANSPOSITIONS — localStorage
+// ============================================================
+// Data structure is intentionally Supabase-portable: each entry is a flat JSON object
+// that maps 1:1 to a database row (id, savedAt, title, timeSignature, keySignature,
+// allNotes JSON blob, saveType). Migrating means swapping loadAllSaves/persistSaves
+// for API calls and rendering the same entry objects.
+
+const STORAGE_KEY = 'cello-transposer-saves';
+
+function generateId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function loadAllSaves() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+    catch (e) { return []; }
+}
+
+function persistSaves(saves) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(saves));
+}
+
+function formatSavedAt(isoString) {
+    const d = new Date(isoString);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
+           ' · ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function hasUnsavedWork() {
+    return state.editor.allNotes.length > 0 || state.score.measures.length > 0;
+}
+
+// Check title field; show inline warning and return false if empty.
+function requireTitle() {
+    const title = (document.getElementById('piece-title').value || '').trim();
+    const warn  = document.getElementById('title-warning');
+    if (!title) {
+        if (warn) warn.classList.add('visible');
+        document.getElementById('piece-title').focus();
+        return false;
+    }
+    if (warn) warn.classList.remove('visible');
+    return true;
+}
+
+// Build a save entry from current application state.
+// For MusicXML imports (allNotes is empty), flatten measure notes so the entry
+// can always be reloaded cleanly into the interactive editor.
+// Return a unique title: if `base` already exists in saved list, append (2), (3), etc.
+function deduplicateTitle(base) {
+    const saves      = loadAllSaves();
+    const usedTitles = new Set(saves.map(s => s.title));
+    if (!usedTitles.has(base)) return base;
+    let n = 2;
+    while (usedTitles.has(`${base} (${n})`)) n++;
+    return `${base} (${n})`;
+}
+
+function buildSaveEntry(saveType) {
+    let allNotes = state.editor.allNotes.slice();
+    if (allNotes.length === 0 && state.score.measures.length > 0) {
+        allNotes = state.score.measures.flatMap(m => m.notes || []);
+    }
+    const baseTitle = (document.getElementById('piece-title').value || '').trim();
+    return {
+        id:            generateId(),
+        savedAt:       new Date().toISOString(),
+        title:         deduplicateTitle(baseTitle),
+        timeSignature: state.score.timeSignature || document.getElementById('time-sig').value || '4/4',
+        keySignature:  state.score.keySignature  || document.getElementById('key-sig').value  || 'C',
+        allNotes:      JSON.parse(JSON.stringify(allNotes)),  // deep copy
+        saveType
+    };
+}
+
+// Save current work. Returns true if save succeeded, false if title was missing.
+async function saveTransposition(saveType) {
+    if (!requireTitle()) return false;
+    if (!hasUnsavedWork()) {
+        await showConfirmModal('Nothing to save yet — add notes or import a file first.', 'OK', true);
+        return false;
+    }
+    const entry = buildSaveEntry(saveType);
+    const saves = loadAllSaves();
+    saves.unshift(entry);   // newest first
+    persistSaves(saves);
+    renderSavedList();
+    // Brief ✓ feedback on the Save button
+    const btn = document.getElementById('btn-save');
+    if (btn && saveType === 'manual') {
+        const orig = btn.innerHTML;
+        btn.innerHTML = '✓ Saved!';
+        btn.disabled = true;
+        setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 1400);
+    }
+    return true;
+}
+
+// Delete a saved entry by id, after confirmation.
+async function deleteTransposition(id, e) {
+    e.stopPropagation();
+    const ok = await showConfirmModal('Delete this saved transposition? This cannot be undone.', 'Delete');
+    if (!ok) return;
+    persistSaves(loadAllSaves().filter(s => s.id !== id));
+    renderSavedList();
+}
+
+// Look up entry by id and load it into the editor.
+async function handleSavedItemClick(id) {
+    const entry = loadAllSaves().find(s => s.id === id);
+    if (!entry) return;
+    if (hasUnsavedWork()) {
+        const ok = await showConfirmModal(
+            'You have unsaved work — load this transposition anyway?', 'Load Anyway');
+        if (!ok) return;
+    }
+    // Restore state
+    state.editor.allNotes           = JSON.parse(JSON.stringify(entry.allNotes));
+    state.editor.currentDuration    = 'q';
+    state.editor.currentAccidental  = null;
+    state.editor.currentDot         = false;
+    state.editor.currentTie         = false;
+    state.score.title               = entry.title;
+    state.score.timeSignature       = entry.timeSignature;
+    state.score.keySignature        = entry.keySignature;
+    // Sync UI dropdowns and title
+    document.getElementById('piece-title').value = entry.title;
+    const tsEl = document.getElementById('time-sig');
+    if (Array.from(tsEl.options).find(o => o.value === entry.timeSignature)) tsEl.value = entry.timeSignature;
+    const ksEl = document.getElementById('key-sig');
+    if (Array.from(ksEl.options).find(o => o.value === entry.keySignature)) ksEl.value = entry.keySignature;
+    // Switch to editor and render
+    switchTab('editor');
+    renderEditorStaff();
+}
+
+// Rebuild the saved list DOM from localStorage.
+function renderSavedList() {
+    const saves   = loadAllSaves();
+    const listEl  = document.getElementById('saved-list');
+    const emptyEl = document.getElementById('saved-list-empty');
+    if (!listEl) return;
+    if (saves.length === 0) {
+        listEl.innerHTML = '';
+        if (emptyEl) emptyEl.style.display = 'block';
+        return;
+    }
+    if (emptyEl) emptyEl.style.display = 'none';
+    listEl.innerHTML = saves.map(s => {
+        const badgeClass = s.saveType === 'export' ? 'badge-export'
+                         : s.saveType === 'print'  ? 'badge-print'
+                         : 'badge-manual';
+        const badgeLabel = s.saveType || 'saved';
+        return `<div class="saved-item" onclick="handleSavedItemClick('${escapeHtml(s.id)}')">
+            <div class="saved-item-info">
+                <span class="saved-item-title">${escapeHtml(s.title)}</span>
+                <span class="saved-item-meta">
+                    <span class="saved-item-badge ${badgeClass}">${badgeLabel}</span>${formatSavedAt(s.savedAt)}
+                </span>
+            </div>
+            <button class="saved-item-delete" onclick="deleteTransposition('${escapeHtml(s.id)}',event)" title="Delete">🗑</button>
+        </div>`;
+    }).join('');
+}
+
+// Toggle panel open/closed on mobile (on desktop it's always open).
+function toggleSavedPanel() {
+    if (window.innerWidth > 768) return;
+    const body    = document.getElementById('saved-panel-body');
+    const chevron = document.getElementById('panel-chevron');
+    const closed  = body.classList.toggle('collapsed');
+    if (chevron) chevron.classList.toggle('open', !closed);
+}
+
+// ---- Confirm modal (Promise-based) ----
+let _confirmResolve = null;
+
+function showConfirmModal(message, okLabel, alertOnly) {
+    return new Promise(resolve => {
+        document.getElementById('modal-message').textContent = message;
+        document.getElementById('modal-ok').textContent = okLabel || 'OK';
+        // Hide Cancel button for alert-only mode
+        const cancelBtn = document.querySelector('#confirm-modal .modal-buttons .btn:first-child');
+        if (cancelBtn) cancelBtn.style.display = alertOnly ? 'none' : '';
+        document.getElementById('confirm-modal').style.display = 'flex';
+        _confirmResolve = result => {
+            document.getElementById('confirm-modal').style.display = 'none';
+            if (cancelBtn) cancelBtn.style.display = '';
+            _confirmResolve = null;
+            resolve(result);
+        };
+    });
+}
+
+// Close modal if overlay background clicked.
+function modalCancel(e) {
+    if (e.target.id === 'confirm-modal' && _confirmResolve) _confirmResolve(false);
+}
+
+// Print with auto-save (save first, then print).
+async function printAndSave() {
+    await saveTransposition('print');
+    window.print();
+}
+
+// Initialise saved list and begin loading cello samples on page load.
+renderSavedList();
+initSampler();
+
+// ============================================================
+// RESPONSIVE RESIZE
+// ============================================================
+// Re-render when the window is resized (e.g. iPad rotation, browser resize)
+// so that computeLayout() recalculates measures-per-line for the new width.
+let _resizeTimer;
+window.addEventListener('resize', () => {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(() => {
+        if (state.score.measures && state.score.measures.length > 0) renderAllOutputs();
+        if (document.getElementById('tab-editor').classList.contains('active')) renderEditorStaff();
+    }, 200);
+});
+
+// ============================================================
+// PRINT STYLES
+// ============================================================
+const printStyle = document.createElement('style');
+printStyle.textContent = `
+@media print {
+    .header, .tabs, .tab-content, .export-row, .settings-row, .editor-toolbar, .btn-row { display: none !important; }
+    .output-section { border: none !important; box-shadow: none !important; }
+    .output-section h2, .output-section .subtitle { display: block !important; }
+    body { background: white !important; }
+}`;
+document.head.appendChild(printStyle);
+</script>
+</body>
+</html>
