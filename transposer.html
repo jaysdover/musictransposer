@@ -1648,7 +1648,24 @@ async function playMusic() {
 
     // Absolute-time scheduling: reliable on iOS (Transport-based scheduling is not).
     // Stop is handled via gain mute (Sampler) and dispose (PolySynth) in stopMusic().
-    const AUDIO_LEAD_MS = 50;
+    //
+    // iOS WebAudio needs more scheduler headroom than desktop browsers.
+    // 300 ms prevents the first notes from being dropped before the audio engine
+    // has fully warmed up after a fresh AudioContext resume.
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const AUDIO_LEAD_MS = isIOS ? 300 : 50;
+
+    // Safety check: if the AudioContext is still not running after Tone.start()
+    // (can happen if the unlock gesture didn't reach the audio system in time),
+    // bail out so we don't schedule notes into a suspended context silently.
+    if (Tone.context.state !== 'running') {
+        console.warn('[transposer] AudioContext not running after Tone.start() — state:', Tone.context.state);
+        setPlaybackStatus('');
+        resetPlaybackUI();
+        return;
+    }
+
     const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
     events.forEach(ev => {
         instrument.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
@@ -1933,6 +1950,32 @@ async function printAndSave() {
 // Note: initSampler() is intentionally NOT called here — it must run after
 // Tone.start() (a user gesture) so iOS Safari's AudioContext is running first.
 renderSavedList();
+
+// ============================================================
+// iOS AUDIO CONTEXT PRE-UNLOCK
+// ============================================================
+// iOS Safari (and Chrome-on-iOS, which shares the WebKit audio engine) suspends
+// the AudioContext until a user gesture occurs.  Tone.start() is called inside
+// playMusic(), but by the time the user taps Play the gesture handler is already
+// deep in async JS — on some iOS versions the AudioContext still doesn't resume
+// in time and the first batch of scheduled notes gets dropped silently.
+//
+// The standard fix is to call Tone.start() (which internally calls
+// AudioContext.resume()) on the very first touchstart anywhere on the page.
+// That primes the audio engine early so that by the time the user taps Play the
+// context is already 'running' and no notes are lost.
+(function iosAudioPreUnlock() {
+    function unlock() {
+        Tone.start().then(() => {
+            if (Tone.context.state === 'running') {
+                document.removeEventListener('touchstart', unlock, true);
+                document.removeEventListener('touchend',   unlock, true);
+            }
+        }).catch(() => {});
+    }
+    document.addEventListener('touchstart', unlock, { passive: true, capture: true });
+    document.addEventListener('touchend',   unlock, { passive: true, capture: true });
+}());
 
 // ============================================================
 // RESPONSIVE RESIZE
