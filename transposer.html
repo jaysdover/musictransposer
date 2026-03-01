@@ -1586,32 +1586,33 @@ function ensureSynth() {
     }
 }
 
-// Load cello samples into a Tone.Sampler. Called once on page load.
-// On success: samplerReady = true, Play button enabled.
-// On failure (samples folder missing / offline): silently falls back to PolySynth.
+// Load cello samples into a Tone.Sampler.
+// Must be called AFTER Tone.start() so the AudioContext is running — critical on iOS
+// where decodeAudioData hangs silently in a suspended context.
+// Fire-and-forget: never blocks the Play button. Falls back silently to PolySynth.
 function initSampler() {
-    if (!SOUNDFONT_ENABLED) return;
-    setPlaybackStatus('loading');
+    if (!SOUNDFONT_ENABLED || audioSampler) return; // disabled or already initialising
     try {
         audioSampler = new Tone.Sampler({
             urls:    CELLO_SAMPLES,
             baseUrl: CELLO_SAMPLES_BASE,
             onload: () => {
                 samplerReady = true;
-                setPlaybackStatus('ready');
-                setTimeout(() => setPlaybackStatus(''), 1800);
+                const el = document.getElementById('playback-status');
+                if (el && !el.textContent) {
+                    setPlaybackStatus('ready');
+                    setTimeout(() => { if (el.textContent.includes('Cello')) setPlaybackStatus(''); }, 2000);
+                }
             },
             onerror: () => {
-                console.warn('Cello samples not found — falling back to synth. ' +
+                console.warn('Cello samples not found — using synth fallback. ' +
                              'Run download-samples.sh to enable the soundfont.');
                 audioSampler = null;
                 samplerReady = false;
-                setPlaybackStatus('');
             }
         }).toDestination();
     } catch (e) {
         audioSampler = null;
-        setPlaybackStatus('');
     }
 }
 
@@ -1622,7 +1623,11 @@ async function playMusic() {
     }
 
     stopMusic();                    // cancel any in-progress playback
-    await Tone.start();             // resume AudioContext (required on first user gesture)
+    await Tone.start();             // resume AudioContext — required on every play on iOS
+
+    // Kick off sampler loading now that the AudioContext is running (safe for iOS).
+    // Fire-and-forget: if samples aren't ready yet this play uses the synth fallback.
+    initSampler();
 
     const useSampler = SOUNDFONT_ENABLED && samplerReady && audioSampler;
     if (!useSampler) ensureSynth();
@@ -1631,44 +1636,50 @@ async function playMusic() {
     const { events, totalTimeS } = buildPlaybackSequence();
     if (events.length === 0) return;
 
-    // Each play gets a session ID — stale highlight callbacks check this before firing.
+    // Session ID — stale highlight callbacks bail out when _playbackSession changes.
     const session = ++_playbackSession;
 
-    // Schedule every note relative to a shared start time slightly in the future.
-    const AUDIO_LEAD_MS = 50;
-    const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
+    // Use Tone.Transport for scheduling so stopMusic() can cancel ALL future events
+    // instantly via Transport.stop() — absolute-time scheduling cannot be cancelled.
+    const LEAD_S = 0.05;
+    Tone.Transport.cancel(0);
+    Tone.Transport.position = 0;
     events.forEach(ev => {
-        instrument.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
+        Tone.Transport.schedule((time) => {
+            instrument.triggerAttackRelease(ev.pitches, ev.toneDur, time);
+        }, ev.timeS);
     });
+    Tone.Transport.start('+' + LEAD_S);
 
-    // Schedule per-note visual highlights to fire in sync with audio
+    // Visual highlights use setTimeout aligned to the same lead offset
     clearAllHighlights();
     highlightTimeouts = events.map(ev => {
         return setTimeout(() => {
-            if (_playbackSession !== session) return; // stale — playback was stopped
+            if (_playbackSession !== session) return;
             highlightNote(ev.noteIndex);
-        }, AUDIO_LEAD_MS + Math.round(ev.timeS * 1000));
+        }, LEAD_S * 1000 + Math.round(ev.timeS * 1000));
     });
 
-    // Auto-reset the UI once playback has finished
     audioStopId = setTimeout(() => {
         if (_playbackSession !== session) return;
         resetPlaybackUI();
-    }, (totalTimeS + 0.6) * 1000);
+    }, (LEAD_S + totalTimeS + 0.6) * 1000);
 
     setPlaybackStatus('playing');
 }
 
 function stopMusic() {
-    _playbackSession++;             // invalidate any pending highlight / auto-reset callbacks
+    _playbackSession++;             // invalidate pending highlight / auto-reset callbacks
 
     if (audioStopId) { clearTimeout(audioStopId); audioStopId = null; }
 
-    // Sampler: release active notes but keep it loaded (reloading samples is expensive)
-    if (audioSampler) { try { audioSampler.releaseAll(); } catch (e) {} }
+    // Stop Transport and cancel ALL future scheduled events — this is what makes
+    // the Stop button actually work for both Sampler and PolySynth.
+    try { Tone.Transport.stop(); Tone.Transport.cancel(0); } catch (e) {}
 
-    // PolySynth: dispose to cancel all scheduled future events
-    if (audioSynth) { audioSynth.dispose(); audioSynth = null; }
+    // Release any notes currently sounding
+    if (audioSampler) { try { audioSampler.releaseAll(); } catch (e) {} }
+    if (audioSynth)   { try { audioSynth.releaseAll();   } catch (e) {} }
 
     clearAllHighlights();
     resetPlaybackUI();
@@ -1915,9 +1926,10 @@ async function printAndSave() {
     window.print();
 }
 
-// Initialise saved list and begin loading cello samples on page load.
+// Initialise saved list on page load.
+// Note: initSampler() is intentionally NOT called here — it must run after
+// Tone.start() (a user gesture) so iOS Safari's AudioContext is running first.
 renderSavedList();
-initSampler();
 
 // ============================================================
 // RESPONSIVE RESIZE
