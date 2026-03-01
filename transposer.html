@@ -1457,6 +1457,7 @@ const KEY_ACCIDENTALS = {
 
 let audioSynth          = null;   // Tone.PolySynth — used when soundfont unavailable
 let audioSampler        = null;   // Tone.Sampler  — cello soundfont (when enabled)
+let audioGain           = null;   // Tone.Volume mute switch — sits in front of the Sampler
 let samplerReady        = false;  // true once all sample files have loaded
 let _playbackSession    = 0;      // incremented on stop; stale callbacks check this
 let audioStopId         = null;   // setTimeout handle for auto-reset
@@ -1590,9 +1591,12 @@ function ensureSynth() {
 // Must be called AFTER Tone.start() so the AudioContext is running — critical on iOS
 // where decodeAudioData hangs silently in a suspended context.
 // Fire-and-forget: never blocks the Play button. Falls back silently to PolySynth.
+// The Sampler routes through audioGain so stopMusic() can mute it instantly without
+// disposing the Sampler (which would force expensive sample re-downloads).
 function initSampler() {
     if (!SOUNDFONT_ENABLED || audioSampler) return; // disabled or already initialising
     try {
+        if (!audioGain) audioGain = new Tone.Volume(0).toDestination();
         audioSampler = new Tone.Sampler({
             urls:    CELLO_SAMPLES,
             baseUrl: CELLO_SAMPLES_BASE,
@@ -1610,7 +1614,7 @@ function initSampler() {
                 audioSampler = null;
                 samplerReady = false;
             }
-        }).toDestination();
+        }).connect(audioGain);  // → gain node → destination (not directly to destination)
     } catch (e) {
         audioSampler = null;
     }
@@ -1629,6 +1633,9 @@ async function playMusic() {
     // Fire-and-forget: if samples aren't ready yet this play uses the synth fallback.
     initSampler();
 
+    // Unmute the Sampler gain node in case stopMusic() muted it.
+    if (audioGain) audioGain.volume.value = 0;
+
     const useSampler = SOUNDFONT_ENABLED && samplerReady && audioSampler;
     if (!useSampler) ensureSynth();
     const instrument = useSampler ? audioSampler : audioSynth;
@@ -1639,31 +1646,27 @@ async function playMusic() {
     // Session ID — stale highlight callbacks bail out when _playbackSession changes.
     const session = ++_playbackSession;
 
-    // Use Tone.Transport for scheduling so stopMusic() can cancel ALL future events
-    // instantly via Transport.stop() — absolute-time scheduling cannot be cancelled.
-    const LEAD_S = 0.05;
-    Tone.Transport.cancel(0);
-    Tone.Transport.position = 0;
+    // Absolute-time scheduling: reliable on iOS (Transport-based scheduling is not).
+    // Stop is handled via gain mute (Sampler) and dispose (PolySynth) in stopMusic().
+    const AUDIO_LEAD_MS = 50;
+    const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
     events.forEach(ev => {
-        Tone.Transport.schedule((time) => {
-            instrument.triggerAttackRelease(ev.pitches, ev.toneDur, time);
-        }, ev.timeS);
+        instrument.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
     });
-    Tone.Transport.start('+' + LEAD_S);
 
-    // Visual highlights use setTimeout aligned to the same lead offset
+    // Visual highlights via setTimeout, aligned to the same lead offset.
     clearAllHighlights();
     highlightTimeouts = events.map(ev => {
         return setTimeout(() => {
             if (_playbackSession !== session) return;
             highlightNote(ev.noteIndex);
-        }, LEAD_S * 1000 + Math.round(ev.timeS * 1000));
+        }, AUDIO_LEAD_MS + Math.round(ev.timeS * 1000));
     });
 
     audioStopId = setTimeout(() => {
         if (_playbackSession !== session) return;
         resetPlaybackUI();
-    }, (LEAD_S + totalTimeS + 0.6) * 1000);
+    }, (totalTimeS + 0.6) * 1000 + AUDIO_LEAD_MS);
 
     setPlaybackStatus('playing');
 }
@@ -1673,13 +1676,13 @@ function stopMusic() {
 
     if (audioStopId) { clearTimeout(audioStopId); audioStopId = null; }
 
-    // Stop Transport and cancel ALL future scheduled events — this is what makes
-    // the Stop button actually work for both Sampler and PolySynth.
-    try { Tone.Transport.stop(); Tone.Transport.cancel(0); } catch (e) {}
+    // Sampler: mute the gain node instantly — silences all pre-scheduled future notes
+    // without disposing the Sampler (which would force expensive sample re-downloads).
+    if (audioGain)   { try { audioGain.volume.value = -Infinity; } catch (e) {} }
+    if (audioSampler){ try { audioSampler.releaseAll(); }          catch (e) {} }
 
-    // Release any notes currently sounding
-    if (audioSampler) { try { audioSampler.releaseAll(); } catch (e) {} }
-    if (audioSynth)   { try { audioSynth.releaseAll();   } catch (e) {} }
+    // PolySynth: dispose cancels all its scheduled future events at the engine level.
+    if (audioSynth)  { audioSynth.dispose(); audioSynth = null; }
 
     clearAllHighlights();
     resetPlaybackUI();
