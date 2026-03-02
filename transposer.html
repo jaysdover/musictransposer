@@ -323,6 +323,16 @@ g.playing path { fill: #e67e22 !important; stroke: #e67e22 !important; }
         <span id="playback-status"></span>
     </div>
 
+    <!-- Audio Debug Panel (visible always so we can diagnose iOS issues) -->
+    <div id="audio-debug-panel" style="margin:8px 0 0 0; padding:8px 10px; background:#f8f8f8; border:1px solid #e0e0e0; border-radius:6px; font-size:11px; font-family:monospace; line-height:1.6;">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+            <strong style="font-size:12px; font-family:sans-serif;">🔊 Audio Diagnostics</strong>
+            <button class="btn" style="font-size:11px; padding:2px 8px;" onclick="runBeepTest()">Beep Test</button>
+            <button class="btn" style="font-size:11px; padding:2px 8px;" onclick="clearAudioLog()">Clear</button>
+        </div>
+        <div id="audio-debug-log" style="white-space:pre-wrap; color:#444; max-height:120px; overflow-y:auto;"></div>
+    </div>
+
     <!-- Bass Clef Output Section -->
     <div class="output-section">
         <h2>Bass Clef Output</h2>
@@ -1652,10 +1662,15 @@ function pitchToHz(pitch) {
 }
 
 // Schedule a single triangle-wave note through the standalone iOS audio engine.
+let _nativeNoteCount = 0;  // resets each play for concise logging
 function scheduleNativeNote(pitch, startTime, durationS) {
     if (!iosCtx) return;
     try {
         const freq = pitchToHz(pitch);
+        if (_nativeNoteCount < 3) {  // log first 3 notes only to keep log readable
+            audioLog('note ' + _nativeNoteCount + ': ' + pitch + ' → ' + freq.toFixed(1) + 'Hz @ t=' + startTime.toFixed(3));
+        }
+        _nativeNoteCount++;
         const osc  = iosCtx.createOscillator();
         const env  = iosCtx.createGain();
 
@@ -1685,6 +1700,7 @@ function scheduleNativeNote(pitch, startTime, durationS) {
 // startTime must be expressed in iosCtx.currentTime seconds.
 function playNativeOscillators(events, startTime) {
     if (!iosCtx || !iosMaster) return;
+    _nativeNoteCount = 0;
     iosMaster.gain.value = 1;   // unmute (stopMusic sets this to 0)
     events.forEach(ev => {
         ev.pitches.forEach(pitch => {
@@ -1742,11 +1758,66 @@ function initSampler() {
     }
 }
 
+// ── AUDIO DIAGNOSTICS ─────────────────────────────────────────────────────────
+function audioLog(msg) {
+    const el = document.getElementById('audio-debug-log');
+    if (!el) return;
+    const ts = new Date().toISOString().substr(11, 8);
+    el.textContent = `[${ts}] ${msg}\n` + el.textContent;
+}
+function clearAudioLog() {
+    const el = document.getElementById('audio-debug-log');
+    if (el) el.textContent = '';
+}
+
+// Standalone beep test — uses the simplest possible raw Web Audio code,
+// completely independent of all app state. Tap this first to confirm whether
+// the browser can produce ANY audio at all on this device.
+function runBeepTest() {
+    audioLog('--- Beep Test START ---');
+    try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) { audioLog('ERROR: No AudioContext available'); return; }
+        audioLog('AudioContext constructor: ' + AC.name);
+
+        const ctx = new AC();
+        audioLog('ctx created, state: ' + ctx.state);
+
+        ctx.resume().then(() => {
+            audioLog('ctx.resume() resolved, state: ' + ctx.state);
+            try {
+                const osc  = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = 440;
+                gain.gain.value = 0.4;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start(ctx.currentTime + 0.05);
+                osc.stop(ctx.currentTime + 0.6);
+                audioLog('440 Hz beep scheduled for +50ms, dur 0.5s');
+                osc.onended = () => audioLog('Beep finished (onended fired)');
+            } catch(e) {
+                audioLog('ERROR scheduling beep: ' + e.message);
+            }
+        }).catch(e => {
+            audioLog('ERROR resume rejected: ' + e.message);
+        });
+    } catch(e) {
+        audioLog('ERROR creating AudioContext: ' + e.message);
+    }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function playMusic() {
     if (!state.score.measures || state.score.measures.length === 0) {
         alert('No music to play. Import a file or use the editor first.');
         return;
     }
+
+    audioLog('--- Play START ---');
+    audioLog('IOS_DEVICE: ' + IOS_DEVICE);
+    audioLog('AudioContext avail: ' + !!(window.AudioContext || window.webkitAudioContext));
 
     stopMusic();                    // cancel any in-progress playback
 
@@ -1758,6 +1829,7 @@ async function playMusic() {
     // any await occurs. This is the most reliable iOS Web Audio unlock pattern.
     if (IOS_DEVICE) {
         createIosCtx();
+        audioLog('iosCtx created: ' + (!!iosCtx) + ', state: ' + (iosCtx ? iosCtx.state : 'n/a'));
         if (iosCtx) {
             try {
                 iosCtx.resume();   // intentionally NOT awaited — just kicks off resume
@@ -1766,7 +1838,8 @@ async function playMusic() {
                 primeSrc.buffer = primeBuf;
                 primeSrc.connect(iosCtx.destination);
                 primeSrc.start(0);  // play silent buffer synchronously in gesture context
-            } catch (e) {}
+                audioLog('silent prime buffer scheduled');
+            } catch (e) { audioLog('prime ERROR: ' + e.message); }
         }
     }
     // ─────────────────────────────────────────────────────────────────────────
@@ -1781,6 +1854,7 @@ async function playMusic() {
     if (audioGain) audioGain.volume.value = 0;
 
     const useSampler = SOUNDFONT_ENABLED && samplerReady && audioSampler;
+    audioLog('useSampler: ' + useSampler + ', samplerReady: ' + samplerReady);
 
     // Lead time: iOS needs extra headroom for the audio engine to warm up post-resume.
     const AUDIO_LEAD_MS = IOS_DEVICE ? 300 : 50;
@@ -1796,38 +1870,44 @@ async function playMusic() {
     // Priority 2 — Standalone iOS oscillators (own AudioContext, no Tone.js at all)
     // Priority 3 — Tone.PolySynth (desktop only; AudioWorklets can fail on iOS)
     // ─────────────────────────────────────────────────────────────────────────
+    audioLog('events: ' + events.length + ', totalTimeS: ' + totalTimeS.toFixed(2));
+
     if (useSampler) {
         // ── Sampler path (Tone.js) ────────────────────────────────────────────
-        // Context guard: bail if Tone.js AudioContext didn't resume.
+        audioLog('PATH: Sampler, Tone ctx: ' + Tone.context.state);
         if (Tone.context.state !== 'running') {
-            console.warn('[transposer] Tone context not running:', Tone.context.state);
+            audioLog('BAIL: Tone ctx not running');
             resetPlaybackUI(); return;
         }
         const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
         events.forEach(ev => {
             audioSampler.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
         });
+        audioLog('Sampler: ' + events.length + ' events scheduled');
 
     } else if (IOS_DEVICE) {
         // ── Standalone iOS oscillator path ────────────────────────────────────
-        // Ensure our own context is created and resumed (belt-and-suspenders; the
-        // touchstart pre-unlock should have already done this).
         createIosCtx();
+        audioLog('PATH: iOS native, iosCtx state: ' + (iosCtx ? iosCtx.state : 'null'));
         if (iosCtx && iosCtx.state === 'suspended') {
-            try { await iosCtx.resume(); } catch (e) {}
+            audioLog('awaiting iosCtx.resume()...');
+            try { await iosCtx.resume(); } catch (e) { audioLog('resume ERROR: ' + e.message); }
+            audioLog('after resume, state: ' + iosCtx.state);
         }
         if (!iosCtx || iosCtx.state !== 'running') {
-            console.warn('[transposer] iOS AudioContext not running:', iosCtx?.state);
+            audioLog('BAIL: iosCtx not running, state: ' + (iosCtx ? iosCtx.state : 'null'));
             resetPlaybackUI(); return;
         }
-        // Use iosCtx.currentTime directly — no Tone.js time involved at all.
         const startTime = iosCtx.currentTime + AUDIO_LEAD_MS / 1000;
+        audioLog('iosCtx.currentTime: ' + iosCtx.currentTime.toFixed(4) + ', startTime: ' + startTime.toFixed(4));
         playNativeOscillators(events, startTime);
+        audioLog('iOS native: ' + events.length + ' events scheduled');
 
     } else {
         // ── Desktop PolySynth path (Tone.js) ─────────────────────────────────
+        audioLog('PATH: Desktop PolySynth, Tone ctx: ' + Tone.context.state);
         if (Tone.context.state !== 'running') {
-            console.warn('[transposer] Tone context not running:', Tone.context.state);
+            audioLog('BAIL: Tone ctx not running');
             resetPlaybackUI(); return;
         }
         ensureSynth();
@@ -1835,6 +1915,7 @@ async function playMusic() {
         events.forEach(ev => {
             audioSynth.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
         });
+        audioLog('PolySynth: ' + events.length + ' events scheduled');
     }
 
     // Visual highlights via setTimeout, aligned to the same lead offset.
