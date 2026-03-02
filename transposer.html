@@ -1455,11 +1455,21 @@ const KEY_ACCIDENTALS = {
     'Db': { B: 'b', E: 'b', A: 'b', D: 'b', G: 'b' },
 };
 
-let audioSynth          = null;   // Tone.PolySynth — desktop fallback (uses AudioWorklets)
+let audioSynth          = null;   // Tone.PolySynth — desktop fallback
 let audioSampler        = null;   // Tone.Sampler  — cello soundfont (when enabled)
 let audioGain           = null;   // Tone.Volume mute switch — sits in front of the Sampler
 let samplerReady        = false;  // true once all sample files have loaded
-let nativeCtxGain       = null;   // raw GainNode — iOS native-oscillator master gain/mute
+
+// ── Standalone iOS audio engine ──────────────────────────────────────────────
+// Tone.js's AudioContext can fail silently on iOS for several reasons (suspended
+// context, AudioWorklet pipeline issues, WebKit quirks). We sidestep all of that
+// by maintaining our own AudioContext, created and unlocked entirely independently.
+const IOS_DEVICE = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let iosCtx    = null;  // our own AudioContext — never touches Tone.js
+let iosMaster = null;  // GainNode master mute switch for the native oscillator path
+// ─────────────────────────────────────────────────────────────────────────────
+
 let _playbackSession    = 0;      // incremented on stop; stale callbacks check this
 let audioStopId         = null;   // setTimeout handle for auto-reset
 let highlightTimeouts   = [];     // setTimeout handles for per-note highlights
@@ -1577,60 +1587,109 @@ function buildPlaybackSequence() {
     return { events, totalTimeS: timeQ * secPerBeat };
 }
 
-// ── iOS NATIVE OSCILLATOR PATH ────────────────────────────────────────────────
-// Tone.js 14 PolySynth uses AudioWorklets internally for its envelope/automation
-// pipeline. On iOS, AudioWorklets can fail silently — the synth appears to run
-// but produces no audible output.  This path bypasses Tone.js entirely, using
-// only raw Web Audio API nodes (OscillatorNode + GainNode) which are fully
-// supported on every iOS version that has Web Audio.
+// ── STANDALONE iOS AUDIO ENGINE ───────────────────────────────────────────────
+// Rather than fight with Tone.js's AudioContext (which can fail silently on iOS
+// for multiple reasons — suspension, AudioWorklet pipeline issues, WebKit quirks),
+// we maintain a completely independent AudioContext for iOS.
 //
-// Used when: on iOS AND the cello Sampler is not yet ready.
+// Key decisions:
+//  • Created with window.AudioContext || window.webkitAudioContext (webkit prefix
+//    is still required for some older iOS versions).
+//  • Unlocked during the FIRST touchstart by calling resume() AND playing a 1-sample
+//    silent AudioBufferSourceNode. The "silent buffer" trick is required on some iOS
+//    versions — just calling resume() is not always sufficient to prime the pipeline.
+//  • Scheduling uses iosCtx.currentTime directly (never Tone.now()), so there is
+//    zero dependency on Tone.js's internal clock or lookahead.
+//  • Stopped via iosMaster GainNode (set to 0 instantly in stopMusic()).
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Ensure the native master gain node exists and is connected to the audio output.
-// Keeping one persistent master gain lets stopMusic() silence everything instantly.
-function ensureNativeGain() {
-    if (nativeCtxGain) return;
-    const ctx = Tone.getContext().rawContext;
-    nativeCtxGain = ctx.createGain();
-    nativeCtxGain.gain.value = 1;
-    nativeCtxGain.connect(ctx.destination);
+// Create the standalone iOS AudioContext and master gain node.
+// Safe to call multiple times; only creates once.
+function createIosCtx() {
+    if (iosCtx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+        iosCtx    = new AC();
+        iosMaster = iosCtx.createGain();
+        iosMaster.gain.value = 1;
+        iosMaster.connect(iosCtx.destination);
+    } catch (e) {
+        console.warn('[transposer] Could not create iOS AudioContext:', e);
+    }
 }
 
-// Schedule a single triangle-wave oscillator note through the native gain node.
+// Resume the iOS context and play a silent buffer to fully prime the audio hardware.
+// Called on first user touch — this is the gold-standard iOS Web Audio unlock pattern.
+function unlockIosCtx() {
+    createIosCtx();
+    if (!iosCtx) return;
+    const doUnlock = () => {
+        // Play a 1-sample silent buffer — primes the audio pipeline on iOS
+        try {
+            const buf = iosCtx.createBuffer(1, 1, iosCtx.sampleRate);
+            const src = iosCtx.createBufferSource();
+            src.buffer = buf;
+            src.connect(iosCtx.destination);
+            src.start(0);
+        } catch (e) {}
+    };
+    if (iosCtx.state === 'suspended') {
+        iosCtx.resume().then(doUnlock).catch(() => {});
+    } else {
+        doUnlock();
+    }
+}
+
+// Convert a Tone.js-format pitch string (e.g. "C#4", "Bb3") to a frequency in Hz.
+// Duplicates Tone.Frequency math so this path has zero dependency on Tone.js.
+function pitchToHz(pitch) {
+    const NOTE_SEMITONES = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+    const m = pitch.match(/^([A-G])(#{1,2}|b{1,2})?(-?\d+)$/);
+    if (!m) return 440;
+    const semis  = NOTE_SEMITONES[m[1]] +
+                   (m[2] === '#'  ?  1 : m[2] === '##'  ?  2 :
+                    m[2] === 'b'  ? -1 : m[2] === 'bb'  ? -2 : 0);
+    const octave = parseInt(m[3], 10);
+    const midi   = semis + (octave + 1) * 12;
+    return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// Schedule a single triangle-wave note through the standalone iOS audio engine.
 function scheduleNativeNote(pitch, startTime, durationS) {
+    if (!iosCtx) return;
     try {
-        const ctx  = Tone.getContext().rawContext;
-        const freq = Tone.Frequency(pitch).toFrequency();
-        const osc  = ctx.createOscillator();
-        const env  = ctx.createGain();
+        const freq = pitchToHz(pitch);
+        const osc  = iosCtx.createOscillator();
+        const env  = iosCtx.createGain();
 
         osc.type = 'triangle';
         osc.frequency.value = freq;
 
-        // Envelope: 20 ms attack, hold, 80 ms release
-        const attackEnd  = startTime + 0.02;
-        const releaseAt  = startTime + Math.max(0.05, durationS - 0.08);
-        const stopAt     = releaseAt + 0.1;
+        // Simple ADSR: 20 ms attack, hold, 80 ms release
+        const attackEnd = startTime + 0.02;
+        const releaseAt = startTime + Math.max(0.05, durationS - 0.08);
+        const stopAt    = releaseAt + 0.1;
 
-        env.gain.setValueAtTime(0, startTime);
+        env.gain.setValueAtTime(0,    startTime);
         env.gain.linearRampToValueAtTime(0.28, attackEnd);
         env.gain.setValueAtTime(0.28, releaseAt);
         env.gain.linearRampToValueAtTime(0, stopAt);
 
         osc.connect(env);
-        env.connect(nativeCtxGain);   // master gain → destination
+        env.connect(iosMaster);   // → master gain → destination
         osc.start(startTime);
-        osc.stop(stopAt + 0.05);      // small buffer so the node isn't torn down early
+        osc.stop(stopAt + 0.05);
     } catch (e) {
         console.warn('[transposer] scheduleNativeNote error:', e);
     }
 }
 
-// Schedule all events using the native oscillator path.
+// Schedule all events through the standalone iOS audio engine.
+// startTime must be expressed in iosCtx.currentTime seconds.
 function playNativeOscillators(events, startTime) {
-    ensureNativeGain();
-    nativeCtxGain.gain.value = 1;   // unmute (stopMusic sets this to 0)
+    if (!iosCtx || !iosMaster) return;
+    iosMaster.gain.value = 1;   // unmute (stopMusic sets this to 0)
     events.forEach(ev => {
         ev.pitches.forEach(pitch => {
             scheduleNativeNote(pitch, startTime + ev.timeS, ev.durationS);
@@ -1705,23 +1764,8 @@ async function playMusic() {
 
     const useSampler = SOUNDFONT_ENABLED && samplerReady && audioSampler;
 
-    // Detect iOS once — used for lead-time and audio-path selection.
-    // The iPadOS/MacIntel check covers iPads that report MacIntel in navigator.platform.
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-    // iOS needs more scheduler headroom; 300 ms prevents the first notes from being
-    // dropped before the audio engine fully warms up after an AudioContext resume.
-    const AUDIO_LEAD_MS = isIOS ? 300 : 50;
-
-    // Safety check: bail out if AudioContext is still not running after Tone.start().
-    // Should not happen if the touchstart pre-unlock fired, but guards against edge cases.
-    if (Tone.context.state !== 'running') {
-        console.warn('[transposer] AudioContext not running after Tone.start() — state:', Tone.context.state);
-        setPlaybackStatus('');
-        resetPlaybackUI();
-        return;
-    }
+    // Lead time: iOS needs extra headroom for the audio engine to warm up post-resume.
+    const AUDIO_LEAD_MS = IOS_DEVICE ? 300 : 50;
 
     const { events, totalTimeS } = buildPlaybackSequence();
     if (events.length === 0) return;
@@ -1729,28 +1773,47 @@ async function playMusic() {
     // Session ID — stale highlight callbacks bail out when _playbackSession changes.
     const session = ++_playbackSession;
 
-    // Absolute-time scheduling: reliable on iOS (Tone.Transport scheduling is not).
-    const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
-
     // ── Audio path selection ──────────────────────────────────────────────────
-    // Priority:  Sampler (cello soundfont)  →  Native oscillators (iOS)  →  PolySynth
-    //
-    // On iOS, Tone.PolySynth uses AudioWorklets internally for its envelope pipeline.
-    // AudioWorklets can fail silently on iOS — the synth appears to run but produces
-    // no audible output and throws no error. We therefore bypass Tone.js entirely on
-    // iOS when the Sampler is not ready, using raw Web Audio API oscillators instead.
+    // Priority 1 — Cello Sampler (Tone.js, all platforms, when samples are loaded)
+    // Priority 2 — Standalone iOS oscillators (own AudioContext, no Tone.js at all)
+    // Priority 3 — Tone.PolySynth (desktop only; AudioWorklets can fail on iOS)
     // ─────────────────────────────────────────────────────────────────────────
     if (useSampler) {
-        // Best path: cello soundfont loaded and ready
+        // ── Sampler path (Tone.js) ────────────────────────────────────────────
+        // Context guard: bail if Tone.js AudioContext didn't resume.
+        if (Tone.context.state !== 'running') {
+            console.warn('[transposer] Tone context not running:', Tone.context.state);
+            resetPlaybackUI(); return;
+        }
+        const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
         events.forEach(ev => {
             audioSampler.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
         });
-    } else if (isIOS) {
-        // iOS fallback: raw Web Audio oscillators — no Tone.js internals, no AudioWorklets
+
+    } else if (IOS_DEVICE) {
+        // ── Standalone iOS oscillator path ────────────────────────────────────
+        // Ensure our own context is created and resumed (belt-and-suspenders; the
+        // touchstart pre-unlock should have already done this).
+        createIosCtx();
+        if (iosCtx && iosCtx.state === 'suspended') {
+            try { await iosCtx.resume(); } catch (e) {}
+        }
+        if (!iosCtx || iosCtx.state !== 'running') {
+            console.warn('[transposer] iOS AudioContext not running:', iosCtx?.state);
+            resetPlaybackUI(); return;
+        }
+        // Use iosCtx.currentTime directly — no Tone.js time involved at all.
+        const startTime = iosCtx.currentTime + AUDIO_LEAD_MS / 1000;
         playNativeOscillators(events, startTime);
+
     } else {
-        // Desktop fallback: Tone.PolySynth (AudioWorklets work fine on desktop)
+        // ── Desktop PolySynth path (Tone.js) ─────────────────────────────────
+        if (Tone.context.state !== 'running') {
+            console.warn('[transposer] Tone context not running:', Tone.context.state);
+            resetPlaybackUI(); return;
+        }
         ensureSynth();
+        const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
         events.forEach(ev => {
             audioSynth.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
         });
@@ -1778,16 +1841,16 @@ function stopMusic() {
 
     if (audioStopId) { clearTimeout(audioStopId); audioStopId = null; }
 
-    // Sampler: mute the Tone.Volume gain node instantly — silences all pre-scheduled
-    // future notes without disposing the Sampler (avoids expensive sample re-downloads).
+    // Sampler (Tone.js): mute the Volume gain node — silences all pre-scheduled notes
+    // without disposing the Sampler (avoids expensive sample re-downloads).
     if (audioGain)   { try { audioGain.volume.value = -Infinity; } catch (e) {} }
     if (audioSampler){ try { audioSampler.releaseAll(); }          catch (e) {} }
 
-    // Native oscillator path (iOS): zero the master gain node — all pre-scheduled
-    // OscillatorNodes feeding into it are silenced instantly.
-    if (nativeCtxGain) { try { nativeCtxGain.gain.value = 0; } catch (e) {} }
+    // Standalone iOS oscillator path: zero the iosMaster GainNode instantly —
+    // all pre-scheduled OscillatorNodes feeding into it are silenced immediately.
+    if (iosMaster)   { try { iosMaster.gain.value = 0; } catch (e) {} }
 
-    // PolySynth: dispose cancels all its scheduled future events at the engine level.
+    // Desktop PolySynth: dispose cancels all scheduled future events at engine level.
     if (audioSynth)  { audioSynth.dispose(); audioSynth = null; }
 
     clearAllHighlights();
@@ -2041,26 +2104,36 @@ async function printAndSave() {
 renderSavedList();
 
 // ============================================================
-// iOS AUDIO CONTEXT PRE-UNLOCK
+// iOS AUDIO PRE-UNLOCK (first user touch anywhere on the page)
 // ============================================================
-// iOS Safari (and Chrome-on-iOS, which shares the WebKit audio engine) suspends
-// the AudioContext until a user gesture occurs.  Tone.start() is called inside
-// playMusic(), but by the time the user taps Play the gesture handler is already
-// deep in async JS — on some iOS versions the AudioContext still doesn't resume
-// in time and the first batch of scheduled notes gets dropped silently.
+// iOS suspends every AudioContext at creation time. It can only be resumed from
+// inside a synchronous user-gesture event handler. By the time the user taps Play,
+// playMusic() is several async steps deep and the gesture window has often closed.
 //
-// The standard fix is to call Tone.start() (which internally calls
-// AudioContext.resume()) on the very first touchstart anywhere on the page.
-// That primes the audio engine early so that by the time the user taps Play the
-// context is already 'running' and no notes are lost.
+// We therefore unlock on the VERY FIRST TOUCH anywhere — the shallowest possible
+// gesture handler. We do this for BOTH audio contexts:
+//   1. Our standalone iosCtx  — via unlockIosCtx() which also plays a 1-sample
+//      silent AudioBufferSourceNode (the "silent buffer" hardware-priming trick
+//      required on many iOS versions to fully initialise the audio pipeline).
+//   2. Tone.js's context — so the Sampler path still works when samples are loaded.
+//
+// The listeners remove themselves after the first successful unlock to avoid
+// repeated calls on every subsequent touch.
 (function iosAudioPreUnlock() {
+    if (!IOS_DEVICE) return;   // skip entirely on desktop — no overhead
+
+    let unlocked = false;
     function unlock() {
-        Tone.start().then(() => {
-            if (Tone.context.state === 'running') {
-                document.removeEventListener('touchstart', unlock, true);
-                document.removeEventListener('touchend',   unlock, true);
-            }
-        }).catch(() => {});
+        if (unlocked) return;
+        unlocked = true;
+        document.removeEventListener('touchstart', unlock, true);
+        document.removeEventListener('touchend',   unlock, true);
+
+        // 1. Unlock our standalone iOS context with the silent-buffer trick
+        unlockIosCtx();
+
+        // 2. Also unlock Tone.js's context (needed for the Sampler path)
+        Tone.start().catch(() => {});
     }
     document.addEventListener('touchstart', unlock, { passive: true, capture: true });
     document.addEventListener('touchend',   unlock, { passive: true, capture: true });
