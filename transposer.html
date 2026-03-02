@@ -1455,10 +1455,11 @@ const KEY_ACCIDENTALS = {
     'Db': { B: 'b', E: 'b', A: 'b', D: 'b', G: 'b' },
 };
 
-let audioSynth          = null;   // Tone.PolySynth — used when soundfont unavailable
+let audioSynth          = null;   // Tone.PolySynth — desktop fallback (uses AudioWorklets)
 let audioSampler        = null;   // Tone.Sampler  — cello soundfont (when enabled)
 let audioGain           = null;   // Tone.Volume mute switch — sits in front of the Sampler
 let samplerReady        = false;  // true once all sample files have loaded
+let nativeCtxGain       = null;   // raw GainNode — iOS native-oscillator master gain/mute
 let _playbackSession    = 0;      // incremented on stop; stale callbacks check this
 let audioStopId         = null;   // setTimeout handle for auto-reset
 let highlightTimeouts   = [];     // setTimeout handles for per-note highlights
@@ -1561,6 +1562,7 @@ function buildPlaybackSequence() {
 
                 events.push({
                     timeS:     timeQ * secPerBeat,
+                    durationS: beats * secPerBeat,   // actual duration in seconds (used by native iOS path)
                     pitches,
                     toneDur:   vfDurToTone(note.duration),
                     noteIndex: noteIdx   // matches ${clef}-note-${noteIdx} IDs set during render
@@ -1575,7 +1577,72 @@ function buildPlaybackSequence() {
     return { events, totalTimeS: timeQ * secPerBeat };
 }
 
+// ── iOS NATIVE OSCILLATOR PATH ────────────────────────────────────────────────
+// Tone.js 14 PolySynth uses AudioWorklets internally for its envelope/automation
+// pipeline. On iOS, AudioWorklets can fail silently — the synth appears to run
+// but produces no audible output.  This path bypasses Tone.js entirely, using
+// only raw Web Audio API nodes (OscillatorNode + GainNode) which are fully
+// supported on every iOS version that has Web Audio.
+//
+// Used when: on iOS AND the cello Sampler is not yet ready.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Ensure the native master gain node exists and is connected to the audio output.
+// Keeping one persistent master gain lets stopMusic() silence everything instantly.
+function ensureNativeGain() {
+    if (nativeCtxGain) return;
+    const ctx = Tone.getContext().rawContext;
+    nativeCtxGain = ctx.createGain();
+    nativeCtxGain.gain.value = 1;
+    nativeCtxGain.connect(ctx.destination);
+}
+
+// Schedule a single triangle-wave oscillator note through the native gain node.
+function scheduleNativeNote(pitch, startTime, durationS) {
+    try {
+        const ctx  = Tone.getContext().rawContext;
+        const freq = Tone.Frequency(pitch).toFrequency();
+        const osc  = ctx.createOscillator();
+        const env  = ctx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+
+        // Envelope: 20 ms attack, hold, 80 ms release
+        const attackEnd  = startTime + 0.02;
+        const releaseAt  = startTime + Math.max(0.05, durationS - 0.08);
+        const stopAt     = releaseAt + 0.1;
+
+        env.gain.setValueAtTime(0, startTime);
+        env.gain.linearRampToValueAtTime(0.28, attackEnd);
+        env.gain.setValueAtTime(0.28, releaseAt);
+        env.gain.linearRampToValueAtTime(0, stopAt);
+
+        osc.connect(env);
+        env.connect(nativeCtxGain);   // master gain → destination
+        osc.start(startTime);
+        osc.stop(stopAt + 0.05);      // small buffer so the node isn't torn down early
+    } catch (e) {
+        console.warn('[transposer] scheduleNativeNote error:', e);
+    }
+}
+
+// Schedule all events using the native oscillator path.
+function playNativeOscillators(events, startTime) {
+    ensureNativeGain();
+    nativeCtxGain.gain.value = 1;   // unmute (stopMusic sets this to 0)
+    events.forEach(ev => {
+        ev.pitches.forEach(pitch => {
+            scheduleNativeNote(pitch, startTime + ev.timeS, ev.durationS);
+        });
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Create the PolySynth fallback (triangle-wave synth, no samples required).
+// NOTE: Tone.PolySynth uses AudioWorklets which can fail silently on iOS.
+// On iOS, playNativeOscillators() is used instead. PolySynth is kept for desktop.
 function ensureSynth() {
     if (SOUNDFONT_ENABLED && samplerReady && audioSampler) return; // sampler handles it
     if (!audioSynth) {
@@ -1637,28 +1704,18 @@ async function playMusic() {
     if (audioGain) audioGain.volume.value = 0;
 
     const useSampler = SOUNDFONT_ENABLED && samplerReady && audioSampler;
-    if (!useSampler) ensureSynth();
-    const instrument = useSampler ? audioSampler : audioSynth;
 
-    const { events, totalTimeS } = buildPlaybackSequence();
-    if (events.length === 0) return;
-
-    // Session ID — stale highlight callbacks bail out when _playbackSession changes.
-    const session = ++_playbackSession;
-
-    // Absolute-time scheduling: reliable on iOS (Transport-based scheduling is not).
-    // Stop is handled via gain mute (Sampler) and dispose (PolySynth) in stopMusic().
-    //
-    // iOS WebAudio needs more scheduler headroom than desktop browsers.
-    // 300 ms prevents the first notes from being dropped before the audio engine
-    // has fully warmed up after a fresh AudioContext resume.
+    // Detect iOS once — used for lead-time and audio-path selection.
+    // The iPadOS/MacIntel check covers iPads that report MacIntel in navigator.platform.
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+    // iOS needs more scheduler headroom; 300 ms prevents the first notes from being
+    // dropped before the audio engine fully warms up after an AudioContext resume.
     const AUDIO_LEAD_MS = isIOS ? 300 : 50;
 
-    // Safety check: if the AudioContext is still not running after Tone.start()
-    // (can happen if the unlock gesture didn't reach the audio system in time),
-    // bail out so we don't schedule notes into a suspended context silently.
+    // Safety check: bail out if AudioContext is still not running after Tone.start().
+    // Should not happen if the touchstart pre-unlock fired, but guards against edge cases.
     if (Tone.context.state !== 'running') {
         console.warn('[transposer] AudioContext not running after Tone.start() — state:', Tone.context.state);
         setPlaybackStatus('');
@@ -1666,10 +1723,38 @@ async function playMusic() {
         return;
     }
 
+    const { events, totalTimeS } = buildPlaybackSequence();
+    if (events.length === 0) return;
+
+    // Session ID — stale highlight callbacks bail out when _playbackSession changes.
+    const session = ++_playbackSession;
+
+    // Absolute-time scheduling: reliable on iOS (Tone.Transport scheduling is not).
     const startTime = Tone.now() + AUDIO_LEAD_MS / 1000;
-    events.forEach(ev => {
-        instrument.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
-    });
+
+    // ── Audio path selection ──────────────────────────────────────────────────
+    // Priority:  Sampler (cello soundfont)  →  Native oscillators (iOS)  →  PolySynth
+    //
+    // On iOS, Tone.PolySynth uses AudioWorklets internally for its envelope pipeline.
+    // AudioWorklets can fail silently on iOS — the synth appears to run but produces
+    // no audible output and throws no error. We therefore bypass Tone.js entirely on
+    // iOS when the Sampler is not ready, using raw Web Audio API oscillators instead.
+    // ─────────────────────────────────────────────────────────────────────────
+    if (useSampler) {
+        // Best path: cello soundfont loaded and ready
+        events.forEach(ev => {
+            audioSampler.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
+        });
+    } else if (isIOS) {
+        // iOS fallback: raw Web Audio oscillators — no Tone.js internals, no AudioWorklets
+        playNativeOscillators(events, startTime);
+    } else {
+        // Desktop fallback: Tone.PolySynth (AudioWorklets work fine on desktop)
+        ensureSynth();
+        events.forEach(ev => {
+            audioSynth.triggerAttackRelease(ev.pitches, ev.toneDur, startTime + ev.timeS);
+        });
+    }
 
     // Visual highlights via setTimeout, aligned to the same lead offset.
     clearAllHighlights();
@@ -1693,10 +1778,14 @@ function stopMusic() {
 
     if (audioStopId) { clearTimeout(audioStopId); audioStopId = null; }
 
-    // Sampler: mute the gain node instantly — silences all pre-scheduled future notes
-    // without disposing the Sampler (which would force expensive sample re-downloads).
+    // Sampler: mute the Tone.Volume gain node instantly — silences all pre-scheduled
+    // future notes without disposing the Sampler (avoids expensive sample re-downloads).
     if (audioGain)   { try { audioGain.volume.value = -Infinity; } catch (e) {} }
     if (audioSampler){ try { audioSampler.releaseAll(); }          catch (e) {} }
+
+    // Native oscillator path (iOS): zero the master gain node — all pre-scheduled
+    // OscillatorNodes feeding into it are silenced instantly.
+    if (nativeCtxGain) { try { nativeCtxGain.gain.value = 0; } catch (e) {} }
 
     // PolySynth: dispose cancels all its scheduled future events at the engine level.
     if (audioSynth)  { audioSynth.dispose(); audioSynth = null; }
