@@ -1619,26 +1619,22 @@ function createIosCtx() {
     }
 }
 
-// Resume the iOS context and play a silent buffer to fully prime the audio hardware.
-// Called on first user touch — this is the gold-standard iOS Web Audio unlock pattern.
+// Prime the iOS AudioContext with a silent buffer. Must be called synchronously
+// inside a gesture handler (touchstart or click) — before any await.
+// The silent buffer schedules real audio work into the engine, which is what iOS
+// actually requires to fully unlock the audio pipeline (resume() alone is not enough
+// on many iOS versions).
 function unlockIosCtx() {
     createIosCtx();
     if (!iosCtx) return;
-    const doUnlock = () => {
-        // Play a 1-sample silent buffer — primes the audio pipeline on iOS
-        try {
-            const buf = iosCtx.createBuffer(1, 1, iosCtx.sampleRate);
-            const src = iosCtx.createBufferSource();
-            src.buffer = buf;
-            src.connect(iosCtx.destination);
-            src.start(0);
-        } catch (e) {}
-    };
-    if (iosCtx.state === 'suspended') {
-        iosCtx.resume().then(doUnlock).catch(() => {});
-    } else {
-        doUnlock();
-    }
+    try {
+        iosCtx.resume();  // kick off — no await, stays synchronous in gesture handler
+        const buf = iosCtx.createBuffer(1, 1, iosCtx.sampleRate);
+        const src = iosCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(iosCtx.destination);
+        src.start(0);     // play silent buffer — synchronously within the gesture
+    } catch (e) {}
 }
 
 // Convert a Tone.js-format pitch string (e.g. "C#4", "Bb3") to a frequency in Hz.
@@ -1753,7 +1749,29 @@ async function playMusic() {
     }
 
     stopMusic();                    // cancel any in-progress playback
-    await Tone.start();             // resume AudioContext — required on every play on iOS
+
+    // ── iOS: unlock BEFORE the first await ───────────────────────────────────
+    // iOS grants audio permission only within the synchronous part of a gesture
+    // handler. The moment we hit any `await`, iOS considers the gesture "consumed"
+    // and may block subsequent AudioContext operations. We therefore create the
+    // context and play the silent priming buffer HERE — still synchronous — before
+    // any await occurs. This is the most reliable iOS Web Audio unlock pattern.
+    if (IOS_DEVICE) {
+        createIosCtx();
+        if (iosCtx) {
+            try {
+                iosCtx.resume();   // intentionally NOT awaited — just kicks off resume
+                const primeBuf = iosCtx.createBuffer(1, 1, iosCtx.sampleRate);
+                const primeSrc = iosCtx.createBufferSource();
+                primeSrc.buffer = primeBuf;
+                primeSrc.connect(iosCtx.destination);
+                primeSrc.start(0);  // play silent buffer synchronously in gesture context
+            } catch (e) {}
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    await Tone.start();             // resume Tone.js AudioContext (Sampler path)
 
     // Kick off sampler loading now that the AudioContext is running (safe for iOS).
     // Fire-and-forget: if samples aren't ready yet this play uses the synth fallback.
