@@ -323,8 +323,10 @@ g.playing path { fill: #e67e22 !important; stroke: #e67e22 !important; }
         <span id="playback-status"></span>
     </div>
 
-    <!-- Audio Debug Panel (visible always so we can diagnose iOS issues) -->
-    <div id="audio-debug-panel" style="margin:8px 0 0 0; padding:8px 10px; background:#f8f8f8; border:1px solid #e0e0e0; border-radius:6px; font-size:11px; font-family:monospace; line-height:1.6;">
+    <!-- Audio Debug Panel — hidden in production.
+         To re-enable: set AUDIO_DEBUG = true in the JS below, then change
+         the style here from display:none to display:block. -->
+    <div id="audio-debug-panel" style="display:none; margin:8px 0 0 0; padding:8px 10px; background:#f8f8f8; border:1px solid #e0e0e0; border-radius:6px; font-size:11px; font-family:monospace; line-height:1.6;">
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
             <strong style="font-size:12px; font-family:sans-serif;">🔊 Audio Diagnostics</strong>
             <button class="btn" style="font-size:11px; padding:2px 8px;" onclick="runBeepTest()">Beep Test</button>
@@ -1627,58 +1629,70 @@ function buildPlaybackSequence() {
 // This must be called synchronously inside a user gesture handler.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Build a minimal single-sample silent WAV as a Blob — no external files needed.
-function createSilentWav() {
-    const numSamples  = 1;
-    const sampleRate  = 44100;
-    const numChannels = 1;
+// Build a 100ms WAV containing a very-quiet 440 Hz sine tone.
+// Using real (non-zero) audio content is important: iOS may skip truly-silent
+// WAVs when deciding whether to promote the audio session to Playback category,
+// especially when the Ring/Silent switch is in silent mode. The tone is at
+// 0.05% of full scale (~−66 dBFS) — completely inaudible in practice.
+function createUnlockWav() {
+    const sampleRate    = 44100;
+    const numSamples    = Math.floor(sampleRate * 0.1); // 100 ms
+    const numChannels   = 1;
     const bitsPerSample = 16;
-    const byteRate    = sampleRate * numChannels * bitsPerSample / 8;
-    const blockAlign  = numChannels * bitsPerSample / 8;
-    const dataSize    = numSamples * blockAlign;
-    const buf         = new ArrayBuffer(44 + dataSize);
-    const v           = new DataView(buf);
-    const le          = true;
+    const byteRate      = sampleRate * numChannels * bitsPerSample / 8;
+    const blockAlign    = numChannels * bitsPerSample / 8;
+    const dataSize      = numSamples * blockAlign;
+    const buf           = new ArrayBuffer(44 + dataSize);
+    const v             = new DataView(buf);
+    const le            = true;
     // RIFF header
     v.setUint32(0,  0x52494646, false);  // 'RIFF'
     v.setUint32(4,  36 + dataSize, le);
     v.setUint32(8,  0x57415645, false);  // 'WAVE'
     // fmt chunk
     v.setUint32(12, 0x666d7420, false);  // 'fmt '
-    v.setUint32(16, 16,          le);    // chunk size
-    v.setUint16(20, 1,           le);    // PCM
-    v.setUint16(22, numChannels, le);
-    v.setUint32(24, sampleRate,  le);
-    v.setUint32(28, byteRate,    le);
-    v.setUint16(32, blockAlign,  le);
-    v.setUint16(34, bitsPerSample, le);
+    v.setUint32(16, 16,           le);
+    v.setUint16(20, 1,            le);   // PCM
+    v.setUint16(22, numChannels,  le);
+    v.setUint32(24, sampleRate,   le);
+    v.setUint32(28, byteRate,     le);
+    v.setUint16(32, blockAlign,   le);
+    v.setUint16(34, bitsPerSample,le);
     // data chunk
     v.setUint32(36, 0x64617461, false);  // 'data'
-    v.setUint32(40, dataSize,   le);
-    v.setInt16 (44, 0,          le);     // one silent sample
+    v.setUint32(40, dataSize,    le);
+    // 440 Hz sine at 0.05% amplitude — real content, completely inaudible
+    const amp = Math.round(32767 * 0.0005);
+    for (let i = 0; i < numSamples; i++) {
+        v.setInt16(44 + i * 2,
+            Math.round(amp * Math.sin(2 * Math.PI * 440 * i / sampleRate)), le);
+    }
     return new Blob([buf], { type: 'audio/wav' });
 }
 
-// Play a silent WAV via an HTML <audio> element to force iOS into the
-// AVAudioSessionCategoryPlayback audio session, so Web Audio routes to
-// the main speaker instead of the earpiece.
-// Call synchronously inside a user gesture handler.
+// Play the unlock WAV via an HTML <audio> element to force iOS into
+// AVAudioSessionCategoryPlayback.  That category:
+//   • Routes audio to the main speaker / headphones (not the earpiece)
+//   • Is NOT silenced by the Ring/Silent hardware switch
+// Web Audio API inherits the category automatically once it is set.
+// Must be called synchronously inside a user gesture handler.
 let _iosCategoryFixed = false;
 function forceIosPlaybackCategory() {
     if (_iosCategoryFixed) return;
     try {
-        const url   = URL.createObjectURL(createSilentWav());
+        const url   = URL.createObjectURL(createUnlockWav());
         const audio = new Audio(url);
-        audio.volume = 0.001;   // nearly-silent but non-zero avoids some Safari optimisations
+        audio.volume = 0.001;  // extra attenuation on top of the already-inaudible waveform
         const p = audio.play();
         if (p && p.then) {
             p.then(() => { _iosCategoryFixed = true; URL.revokeObjectURL(url); })
-             .catch(() => { URL.revokeObjectURL(url); });
+             .catch(e => { audioLog('forceIosPlaybackCategory play() rejected: ' + e.message);
+                           URL.revokeObjectURL(url); });
         } else {
             _iosCategoryFixed = true;
             URL.revokeObjectURL(url);
         }
-        audioLog('forceIosPlaybackCategory: <audio>.play() called');
+        audioLog('forceIosPlaybackCategory: play() called');
     } catch (e) {
         audioLog('forceIosPlaybackCategory ERROR: ' + e.message);
     }
@@ -1831,7 +1845,12 @@ function initSampler() {
 }
 
 // ── AUDIO DIAGNOSTICS ─────────────────────────────────────────────────────────
+// Set AUDIO_DEBUG = true AND change the panel's style to display:block (in the
+// HTML above) to re-enable the on-screen log and Beep Test button.
+const AUDIO_DEBUG = false;
+
 function audioLog(msg) {
+    if (!AUDIO_DEBUG) return;
     const el = document.getElementById('audio-debug-log');
     if (!el) return;
     const ts = new Date().toISOString().substr(11, 8);
