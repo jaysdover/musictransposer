@@ -1613,6 +1613,77 @@ function buildPlaybackSequence() {
 //  • Stopped via iosMaster GainNode (set to 0 instantly in stopMusic()).
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── iOS AVAudioSession category fix ──────────────────────────────────────────
+// By default iOS routes Web Audio through AVAudioSessionCategorySoloAmbient,
+// which uses the EARPIECE (the small speaker at the top used for phone calls)
+// rather than the main bottom speaker. This is why the audio engine runs
+// correctly but produces no audible sound from the main speaker.
+//
+// Playing even a tiny sound through an HTML <audio> element forces iOS to switch
+// the app's AVAudioSession to the Playback category, which routes audio to the
+// main speaker/headphones and is what all music apps use. Web Audio API then
+// inherits this routing automatically.
+//
+// This must be called synchronously inside a user gesture handler.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Build a minimal single-sample silent WAV as a Blob — no external files needed.
+function createSilentWav() {
+    const numSamples  = 1;
+    const sampleRate  = 44100;
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate    = sampleRate * numChannels * bitsPerSample / 8;
+    const blockAlign  = numChannels * bitsPerSample / 8;
+    const dataSize    = numSamples * blockAlign;
+    const buf         = new ArrayBuffer(44 + dataSize);
+    const v           = new DataView(buf);
+    const le          = true;
+    // RIFF header
+    v.setUint32(0,  0x52494646, false);  // 'RIFF'
+    v.setUint32(4,  36 + dataSize, le);
+    v.setUint32(8,  0x57415645, false);  // 'WAVE'
+    // fmt chunk
+    v.setUint32(12, 0x666d7420, false);  // 'fmt '
+    v.setUint32(16, 16,          le);    // chunk size
+    v.setUint16(20, 1,           le);    // PCM
+    v.setUint16(22, numChannels, le);
+    v.setUint32(24, sampleRate,  le);
+    v.setUint32(28, byteRate,    le);
+    v.setUint16(32, blockAlign,  le);
+    v.setUint16(34, bitsPerSample, le);
+    // data chunk
+    v.setUint32(36, 0x64617461, false);  // 'data'
+    v.setUint32(40, dataSize,   le);
+    v.setInt16 (44, 0,          le);     // one silent sample
+    return new Blob([buf], { type: 'audio/wav' });
+}
+
+// Play a silent WAV via an HTML <audio> element to force iOS into the
+// AVAudioSessionCategoryPlayback audio session, so Web Audio routes to
+// the main speaker instead of the earpiece.
+// Call synchronously inside a user gesture handler.
+let _iosCategoryFixed = false;
+function forceIosPlaybackCategory() {
+    if (_iosCategoryFixed) return;
+    try {
+        const url   = URL.createObjectURL(createSilentWav());
+        const audio = new Audio(url);
+        audio.volume = 0.001;   // nearly-silent but non-zero avoids some Safari optimisations
+        const p = audio.play();
+        if (p && p.then) {
+            p.then(() => { _iosCategoryFixed = true; URL.revokeObjectURL(url); })
+             .catch(() => { URL.revokeObjectURL(url); });
+        } else {
+            _iosCategoryFixed = true;
+            URL.revokeObjectURL(url);
+        }
+        audioLog('forceIosPlaybackCategory: <audio>.play() called');
+    } catch (e) {
+        audioLog('forceIosPlaybackCategory ERROR: ' + e.message);
+    }
+}
+
 // Create the standalone iOS AudioContext and master gain node.
 // Safe to call multiple times; only creates once.
 function createIosCtx() {
@@ -1635,6 +1706,7 @@ function createIosCtx() {
 // actually requires to fully unlock the audio pipeline (resume() alone is not enough
 // on many iOS versions).
 function unlockIosCtx() {
+    forceIosPlaybackCategory();  // force AVAudioSessionCategoryPlayback via <audio> element
     createIosCtx();
     if (!iosCtx) return;
     try {
@@ -1828,6 +1900,7 @@ async function playMusic() {
     // context and play the silent priming buffer HERE — still synchronous — before
     // any await occurs. This is the most reliable iOS Web Audio unlock pattern.
     if (IOS_DEVICE) {
+        forceIosPlaybackCategory();  // switch AVAudioSession to Playback — routes to main speaker
         createIosCtx();
         audioLog('iosCtx created: ' + (!!iosCtx) + ', state: ' + (iosCtx ? iosCtx.state : 'n/a'));
         if (iosCtx) {
